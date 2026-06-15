@@ -1,0 +1,20 @@
+# Secrets — NEVER commit
+backend/.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+backend/field_assistant.db
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
