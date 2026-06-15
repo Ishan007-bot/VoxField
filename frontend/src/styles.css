@@ -179,7 +179,9 @@ h1, h2, h3, .display { font-family: var(--display); letter-spacing: 0.01em; font
 
 /* ---------- Stats strip (gauges) ---------- */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
-@media (max-width: 560px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 760px) { .stats { grid-template-columns: repeat(3, 1fr) !important; } }
+@media (max-width: 480px) { .stats { grid-template-columns: repeat(2, 1fr) !important; } }
+@media (max-width: 880px) { .dash-grid { grid-template-columns: 1fr !important; } }
 .stat { padding: 16px 14px 14px; text-align: left; }
 .stat .num { font-family: var(--mono); font-size: 1.9rem; font-weight: 700; line-height: 1; color: var(--cyan); text-shadow: 0 0 18px var(--glow-cyan); }
 .stat .lbl { font-family: var(--mono); font-size: 0.66rem; font-weight: 500; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.12em; margin-top: 10px; }
