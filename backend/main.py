@@ -147,6 +147,32 @@ def ai_status():
             "engine": "gemini" if ai_engine.gemini_available() else "rule-based"}
 
 
+@app.get("/stats")
+def stats():
+    """Headline numbers for the worker home screen and dashboard."""
+    with db() as conn:
+        assets = conn.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
+        wo_open = conn.execute(
+            "SELECT COUNT(*) n FROM work_orders WHERE status != 'closed'").fetchone()["n"]
+        wo_total = conn.execute("SELECT COUNT(*) n FROM work_orders").fetchone()["n"]
+        critical = conn.execute(
+            "SELECT COUNT(*) n FROM work_orders WHERE severity IN ('high','critical') "
+            "AND status != 'closed'").fetchone()["n"]
+        notes = conn.execute("SELECT COUNT(*) n FROM voice_notes").fetchone()["n"]
+    return {"assets": assets, "open_work_orders": wo_open, "total_work_orders": wo_total,
+            "critical_open": critical, "voice_notes": notes}
+
+
+@app.get("/activity")
+def activity(limit: int = 8):
+    """Recent voice notes + work-order events for the live feed."""
+    with db() as conn:
+        notes = conn.execute(
+            "SELECT transcript, intent, technician, created_at FROM voice_notes "
+            "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(n) for n in notes]
+
+
 # ===========================================================================
 # Phase 2: extraction, Q&A, and work-order CRUD
 # ===========================================================================
