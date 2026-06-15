@@ -19,6 +19,7 @@ export const api = {
   aiStatus: () => req('/ai-status'),
   stats: () => req('/stats'),
   activity: (limit = 8) => req(`/activity?limit=${limit}`),
+  dashboard: () => req('/dashboard'),
   vocabulary: () => req('/vocabulary'),
   assets: (type) => req('/assets' + (type ? `?type=${encodeURIComponent(type)}` : '')),
   asset: (code) => req(`/assets/${encodeURIComponent(code)}`),
