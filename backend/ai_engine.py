@@ -44,6 +44,16 @@ def gemini_available():
     return _get_gemini() is not None
 
 
+# Fail fast when Gemini is throttled/unreachable so we fall back to rule-based
+# in ~5s instead of the SDK's default ~28s retry storm. No automatic retries.
+def _gen(model, prompt):
+    from google.api_core import retry as _retry
+    return model.generate_content(
+        prompt,
+        request_options={"timeout": 8, "retry": _retry.Retry(deadline=8, maximum=0)},
+    )
+
+
 SEVERITY_WORDS = {
     "critical": ["critical", "catastrophic", "emergency", "explosion", "fire", "danger"],
     "high": ["high", "severe", "major", "urgent", "bad", "serious", "heavy"],
@@ -157,7 +167,7 @@ def extract(transcript, vocab):
     model = _get_gemini()
     if model is not None:
         try:
-            resp = model.generate_content(_extract_prompt(transcript, vocab))
+            resp = _gen(model, _extract_prompt(transcript, vocab))
             raw = (resp.text or "").strip()
             # strip ```json fences if present
             raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
@@ -235,7 +245,7 @@ def answer(question, context):
     model = _get_gemini()
     if model is not None and context is not None:
         try:
-            resp = model.generate_content(_answer_prompt(question, context["text"]))
+            resp = _gen(model, _answer_prompt(question, context["text"]))
             text = (resp.text or "").strip()
             if text:
                 return text, "gemini"

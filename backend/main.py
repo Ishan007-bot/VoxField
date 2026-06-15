@@ -173,6 +173,48 @@ def activity(limit: int = 8):
     return [dict(n) for n in notes]
 
 
+@app.get("/dashboard")
+def dashboard():
+    """Everything the supervisor view needs, in one call (good for polling):
+    headline stats, work orders, recent transcripts, exception alerts,
+    and per-technician activity summary."""
+    with db() as conn:
+        work_orders = [dict(r) for r in conn.execute(
+            "SELECT * FROM work_orders ORDER BY created_at DESC").fetchall()]
+        transcripts = [dict(r) for r in conn.execute(
+            "SELECT id, transcript, intent, technician, work_order_id, created_at "
+            "FROM voice_notes ORDER BY created_at DESC LIMIT 30").fetchall()]
+        # Per-technician activity: note count + last seen
+        techs = [dict(r) for r in conn.execute(
+            "SELECT technician, COUNT(*) AS notes, MAX(created_at) AS last_seen "
+            "FROM voice_notes WHERE technician IS NOT NULL "
+            "GROUP BY technician ORDER BY last_seen DESC").fetchall()]
+        assets = conn.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
+
+    # Exception alerts = open high/critical work orders (the things a supervisor must act on).
+    alerts = [
+        {
+            "id": wo["id"], "asset_code": wo["asset_code"], "severity": wo["severity"],
+            "inspection_result": wo["inspection_result"], "location": wo["location"],
+            "technician": wo["technician"], "created_at": wo["created_at"],
+        }
+        for wo in work_orders
+        if wo["status"] != "closed" and wo["severity"] in ("high", "critical")
+    ]
+
+    stats = {
+        "assets": assets,
+        "total_work_orders": len(work_orders),
+        "open_work_orders": sum(1 for w in work_orders if w["status"] != "closed"),
+        "closed_work_orders": sum(1 for w in work_orders if w["status"] == "closed"),
+        "critical_open": len(alerts),
+        "voice_notes": len(transcripts),
+        "active_technicians": len(techs),
+    }
+    return {"stats": stats, "work_orders": work_orders, "transcripts": transcripts,
+            "technicians": techs, "alerts": alerts}
+
+
 # ===========================================================================
 # Phase 2: extraction, Q&A, and work-order CRUD
 # ===========================================================================
