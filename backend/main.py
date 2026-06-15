@@ -4,13 +4,37 @@ Phase 1: app setup, DB init + seed on startup, and asset/knowledge read endpoint
 Phase 2 will add: work order CRUD, voice extraction, and Q&A endpoints.
 """
 import json
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
+import ai_engine
+import knowledge
 from db import db, init_db
 from seed import seed
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _vocab():
+    """Domain vocabulary used to guide extraction. Mirrors the /vocabulary route."""
+    with db() as conn:
+        rows = conn.execute("SELECT code, name, location, procedures FROM assets").fetchall()
+    codes, names, locations, procedures = [], [], set(), set()
+    for r in rows:
+        codes.append(r["code"])
+        names.append(r["name"])
+        locations.add(r["location"])
+        for p in json.loads(r["procedures"]):
+            procedures.add(p["name"])
+    return {"codes": codes, "names": names,
+            "locations": sorted(locations), "procedures": sorted(procedures)}
 
 
 @asynccontextmanager
@@ -114,3 +138,178 @@ def vocabulary():
         "locations": sorted(locations),
         "procedures": sorted(procedures),
     }
+
+
+@app.get("/ai-status")
+def ai_status():
+    """Tells the frontend whether Gemini is active or we're on the fallback."""
+    return {"gemini": ai_engine.gemini_available(),
+            "engine": "gemini" if ai_engine.gemini_available() else "rule-based"}
+
+
+# ===========================================================================
+# Phase 2: extraction, Q&A, and work-order CRUD
+# ===========================================================================
+WO_FIELDS = ["asset_code", "inspection_result", "fault_code", "location",
+             "severity", "action_taken", "parts_required", "status",
+             "raw_transcript", "technician"]
+
+
+class ExtractIn(BaseModel):
+    transcript: str
+    technician: str | None = None
+    language: str | None = "en"
+
+
+class QueryIn(BaseModel):
+    question: str
+    technician: str | None = None
+    language: str | None = "en"
+
+
+class WorkOrderIn(BaseModel):
+    asset_code: str | None = None
+    inspection_result: str | None = None
+    fault_code: str | None = None
+    location: str | None = None
+    severity: str | None = None
+    action_taken: str | None = None
+    parts_required: str | None = None
+    status: str | None = "open"
+    raw_transcript: str | None = None
+    technician: str | None = None
+
+
+class WorkOrderUpdate(BaseModel):
+    inspection_result: str | None = None
+    fault_code: str | None = None
+    location: str | None = None
+    severity: str | None = None
+    action_taken: str | None = None
+    parts_required: str | None = None
+    status: str | None = None
+
+
+def _wo_to_dict(row):
+    return dict(row)
+
+
+def _log_voice_note(transcript, intent, technician, work_order_id=None):
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO voice_notes (transcript, intent, technician, work_order_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (transcript, intent, technician, work_order_id, _now()),
+        )
+
+
+@app.post("/extract")
+def extract_fields(body: ExtractIn):
+    """Voice transcript -> structured work-order fields (no DB write).
+    The frontend shows these for confirmation, then POSTs /work-orders."""
+    started = time.perf_counter()
+    data, engine = ai_engine.extract(body.transcript, _vocab())
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    _log_voice_note(body.transcript, data.get("intent"), body.technician)
+    return {"fields": data, "engine": engine, "elapsed_ms": elapsed_ms}
+
+
+@app.post("/query")
+def query(body: QueryIn):
+    """Answer a domain question from the knowledge base. Times the round trip
+    so the frontend can prove the <3s success metric."""
+    started = time.perf_counter()
+    context = knowledge.retrieve(body.question)
+    answer_text, engine = ai_engine.answer(body.question, context)
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    _log_voice_note(body.question, "query", body.technician)
+    return {
+        "answer": answer_text,
+        "asset_code": context["asset"]["code"] if context else None,
+        "engine": engine,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+@app.get("/work-orders")
+def list_work_orders(status: str | None = None):
+    with db() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM work_orders WHERE status = ? ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM work_orders ORDER BY created_at DESC"
+            ).fetchall()
+    return [_wo_to_dict(r) for r in rows]
+
+
+@app.get("/work-orders/{wo_id}")
+def get_work_order(wo_id: int):
+    with db() as conn:
+        row = conn.execute("SELECT * FROM work_orders WHERE id = ?", (wo_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Work order {wo_id} not found")
+    return _wo_to_dict(row)
+
+
+@app.post("/work-orders")
+def create_work_order(body: WorkOrderIn):
+    now = _now()
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO work_orders "
+            "(asset_code, inspection_result, fault_code, location, severity, "
+            " action_taken, parts_required, status, raw_transcript, technician, "
+            " created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (body.asset_code, body.inspection_result, body.fault_code, body.location,
+             body.severity, body.action_taken, body.parts_required,
+             body.status or "open", body.raw_transcript, body.technician, now, now),
+        )
+        wo_id = cur.lastrowid
+        if body.raw_transcript:
+            conn.execute(
+                "INSERT INTO voice_notes (transcript, intent, technician, work_order_id, created_at) "
+                "VALUES (?, 'create_wo', ?, ?, ?)",
+                (body.raw_transcript, body.technician, wo_id, now),
+            )
+        row = conn.execute("SELECT * FROM work_orders WHERE id = ?", (wo_id,)).fetchone()
+    return {"work_order": _wo_to_dict(row),
+            "confirmation": f"Work order {wo_id} created"
+                            + (f" for {body.asset_code}" if body.asset_code else "")
+                            + (f", severity {body.severity}" if body.severity else "") + "."}
+
+
+@app.patch("/work-orders/{wo_id}")
+def update_work_order(wo_id: int, body: WorkOrderUpdate):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values()) + [_now(), wo_id]
+    with db() as conn:
+        cur = conn.execute(
+            f"UPDATE work_orders SET {sets}, updated_at = ? WHERE id = ?", values
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Work order {wo_id} not found")
+        row = conn.execute("SELECT * FROM work_orders WHERE id = ?", (wo_id,)).fetchone()
+    return {"work_order": _wo_to_dict(row),
+            "confirmation": f"Work order {wo_id} updated."}
+
+
+@app.post("/work-orders/{wo_id}/close")
+def close_work_order(wo_id: int):
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE work_orders SET status = 'closed', updated_at = ? WHERE id = ?",
+            (_now(), wo_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Work order {wo_id} not found")
+        row = conn.execute("SELECT * FROM work_orders WHERE id = ?", (wo_id,)).fetchone()
+    return {"work_order": _wo_to_dict(row),
+            "confirmation": f"Work order {wo_id} closed."}
