@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { listen, speak, speechSupported, LANGUAGES } from '../lib/speech.js'
 import { useRevealGroup } from '../lib/useReveal.js'
 import { useTheme } from '../lib/useTheme.js'
+import { useConnectivity } from '../lib/useConnectivity.js'
+import * as queue from '../lib/offlineQueue.js'
 import { RevealCard } from '../components/Reveal.jsx'
 
 const TECH = 'R. Mehta' // demo technician identity
@@ -51,15 +53,59 @@ export default function Worker() {
   const [aiEngine, setAiEngine] = useState(null)
   const [stats, setStats] = useState(null)
   const [feed, setFeed] = useState([])
+  const [pending, setPending] = useState(0)
+  const [syncing, setSyncing] = useState(false)
+  const [textNote, setTextNote] = useState('')   // offline text-confirm fallback
   const stopRef = useRef(null)
   const gridRef = useRevealGroup()
   const { theme, toggle } = useTheme()
+
+  const refreshPending = useCallback(async () => {
+    setPending(await queue.pendingCount())
+  }, [])
+
+  // Process one queued item against the backend. Throws on failure (stays queued).
+  const processItem = useCallback(async (item) => {
+    const p = item.payload
+    if (item.type === 'create_wo') {
+      // Re-extract at sync time so Gemini (if available) does the smart parsing.
+      const ex = await api.extract(item.transcript, TECH, p.language)
+      const f = ex.fields
+      return api.createWorkOrder({
+        asset_code: f.asset_code, inspection_result: f.inspection_result,
+        fault_code: f.fault_code, location: f.location, severity: f.severity,
+        action_taken: f.action_taken, parts_required: f.parts_required,
+        raw_transcript: item.transcript, technician: TECH,
+      })
+    }
+    if (item.type === 'query') return api.query(p.question, TECH, p.language)
+    if (item.type === 'update_wo') return api.updateWorkOrder(p.id, p.patch)
+    if (item.type === 'close_wo') return api.closeWorkOrder(p.id)
+    throw new Error('Unknown queued action: ' + item.type)
+  }, [])
+
+  const syncQueue = useCallback(async () => {
+    setSyncing(true)
+    try {
+      const { synced, failed } = await queue.drain(processItem)
+      await queue.clearDone()
+      await refreshPending()
+      if (synced > 0) {
+        showToast(`Synced ${synced} queued ${synced === 1 ? 'item' : 'items'}.`)
+        refreshHome(); if (mode === 'orders') refreshOrders()
+      }
+      if (failed > 0) showToast(`${failed} item(s) failed to sync — will retry.`)
+    } finally { setSyncing(false) }
+  }, [processItem, refreshPending, mode])
+
+  const { online } = useConnectivity(syncQueue)
 
   useEffect(() => {
     api.aiStatus().then(s => setAiEngine(s.engine)).catch(() => setAiEngine('offline'))
     if ('speechSynthesis' in window) window.speechSynthesis.getVoices()
     refreshHome()
-  }, [])
+    refreshPending()
+  }, [refreshPending])
 
   useEffect(() => { if (mode === 'orders') refreshOrders() }, [mode])
 
@@ -98,23 +144,46 @@ export default function Worker() {
   }
 
   async function doExtract(text) {
+    // Offline: queue the raw note now; it will be extracted + filed on reconnect.
+    if (!online) {
+      await queue.enqueue('create_wo', { language: lang.split('-')[0] }, text)
+      await refreshPending()
+      const msg = 'Offline — report queued. It will sync when you reconnect.'
+      speak(msg, lang); showToast(msg)
+      setTranscript(''); setExtracted(null)
+      return
+    }
     setBusy(true)
     try {
       const res = await api.extract(text, TECH, lang.split('-')[0])
       setExtracted(res.fields)
     } catch (e) {
-      showToast('Extraction failed: ' + e.message)
+      // Network failed mid-request — fall back to queueing.
+      await queue.enqueue('create_wo', { language: lang.split('-')[0] }, text)
+      await refreshPending()
+      showToast('Connection lost — report queued for sync.')
+      setTranscript('')
     } finally { setBusy(false) }
   }
 
   async function doQuery(text) {
+    // Queries need the backend (knowledge base + AI). Offline: queue it.
+    if (!online) {
+      await queue.enqueue('query', { question: text, language: lang.split('-')[0] }, text)
+      await refreshPending()
+      const msg = 'Offline — your question is queued and will be answered on reconnect.'
+      speak(msg, lang); showToast(msg)
+      return
+    }
     setBusy(true)
     try {
       const res = await api.query(text, TECH, lang.split('-')[0])
       setAnswer(res)
       speak(res.answer, lang) // speak the answer back in the same language
     } catch (e) {
-      showToast('Query failed: ' + e.message)
+      await queue.enqueue('query', { question: text, language: lang.split('-')[0] }, text)
+      await refreshPending()
+      showToast('Connection lost — question queued.')
     } finally { setBusy(false) }
   }
 
@@ -137,17 +206,44 @@ export default function Worker() {
       showToast(res.confirmation)
       setExtracted(null); setTranscript(''); refreshHome()
     } catch (e) {
-      showToast('Could not create work order: ' + e.message)
+      // Queue the confirmed fields so nothing is lost if the network drops.
+      await queue.enqueue('create_wo', { language: lang.split('-')[0] }, transcript || extracted.inspection_result || '')
+      await refreshPending()
+      showToast('Connection lost — work order queued for sync.')
+      setExtracted(null); setTranscript('')
     } finally { setBusy(false) }
   }
 
   async function closeOrder(id) {
+    if (!online) {
+      await queue.enqueue('close_wo', { id })
+      await refreshPending()
+      const msg = `Offline — close request for WO ${id} queued.`
+      speak(msg, lang); showToast(msg)
+      return
+    }
     try {
       const res = await api.closeWorkOrder(id)
       speak(res.confirmation, lang)
       showToast(res.confirmation)
       refreshOrders(); refreshHome()
-    } catch (e) { showToast('Close failed: ' + e.message) }
+    } catch (e) {
+      await queue.enqueue('close_wo', { id }); await refreshPending()
+      showToast('Connection lost — close request queued.')
+    }
+  }
+
+  // Offline text-confirm fallback: file a typed note when voice/STT isn't available offline.
+  async function submitTextNote() {
+    const text = textNote.trim()
+    if (!text) return
+    await queue.enqueue(mode === 'ask' ? 'query' : 'create_wo',
+      mode === 'ask' ? { question: text, language: lang.split('-')[0] } : { language: lang.split('-')[0] },
+      text)
+    await refreshPending()
+    setTextNote('')
+    const msg = 'Note queued. It will sync when you reconnect.'
+    showToast(msg); speak(msg, lang)
   }
 
   const micLabel = listening ? '● Recording — tap to stop'
@@ -214,11 +310,17 @@ export default function Worker() {
             aria-label="Push to talk">
             {listening ? '⏸' : '🎤'}
           </button>
-          <div className="mic-label">{busy ? 'Thinking…' : micLabel}</div>
+          <div className="mic-label">{busy ? 'Processing…' : micLabel}</div>
           <div className="statusbar">
-            <span className="pill"><span className={`dot ${navigator.onLine ? 'online' : 'offline'}`} />
-              {navigator.onLine ? 'Online' : 'Offline'}</span>
+            <span className="pill"><span className={`dot ${online ? 'online' : 'offline'}`} />
+              {online ? 'Online' : 'Offline'}</span>
             {aiEngine && <span className="pill">🧠 {aiEngine}</span>}
+            {pending > 0 && (
+              <button className="pill" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', cursor: online ? 'pointer' : 'default' }}
+                onClick={() => online && syncQueue()} title={online ? 'Tap to sync now' : 'Will sync when online'}>
+                {syncing ? '⟳ syncing…' : `⧖ ${pending} queued`}
+              </button>
+            )}
           </div>
 
           {/* Quick-action chips — guide the worker / demo voice features */}
@@ -227,6 +329,23 @@ export default function Worker() {
               <button className="qchip" onClick={() => runQuickQuery('What are the specs of pump PMP-4471?')}>🔧 Specs of PMP-4471</button>
               <button className="qchip" onClick={() => runQuickQuery('When was the last maintenance on GEN-9001?')}>🕑 GEN-9001 history</button>
               <button className="qchip" onClick={() => runQuickQuery('How do I clean the condenser tubes on the chiller?')}>📋 Chiller procedure</button>
+            </div>
+          )}
+
+          {/* Offline text-confirm fallback — guarantees a queued note has content */}
+          {!online && (
+            <div className="row" style={{ marginTop: 16, width: '100%', maxWidth: 520, justifyContent: 'center' }}>
+              <input
+                value={textNote}
+                onChange={e => setTextNote(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submitTextNote() }}
+                placeholder={mode === 'ask' ? 'Type a question to queue…' : 'Type a note to queue…'}
+                style={{
+                  flex: 1, minWidth: 200, fontFamily: 'var(--mono)', fontSize: '0.9rem',
+                  padding: '12px 14px', borderRadius: 'var(--radius-sm)', color: 'var(--ink)',
+                  background: 'var(--bg-2)', border: '1px solid var(--edge)'
+                }} />
+              <button className="btn" onClick={submitTextNote}>Queue</button>
             </div>
           )}
         </div>
