@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api.js'
-import { listen, speak, speechSupported, LANGUAGES } from '../lib/speech.js'
+import { listen, speak, speechSupported, LANGUAGES, unlockAudio,
+         recordAudio, cloudTranscribe, cloudSpeak, cloudSpeechAvailable } from '../lib/speech.js'
 import { useRevealGroup } from '../lib/useReveal.js'
 import { useTheme } from '../lib/useTheme.js'
 import { useConnectivity } from '../lib/useConnectivity.js'
 import * as queue from '../lib/offlineQueue.js'
 import { RevealCard } from '../components/Reveal.jsx'
+import RetroMic from '../components/RetroMic.jsx'
 
 const TECH = 'R. Mehta' // demo technician identity
 
@@ -51,6 +53,7 @@ export default function Worker() {
   const [toast, setToast] = useState('')
   const [supported] = useState(speechSupported())
   const [aiEngine, setAiEngine] = useState(null)
+  const [cloudSpeech, setCloudSpeech] = useState(false)
   const [stats, setStats] = useState(null)
   const [feed, setFeed] = useState([])
   const [pending, setPending] = useState(0)
@@ -102,10 +105,24 @@ export default function Worker() {
 
   useEffect(() => {
     api.aiStatus().then(s => setAiEngine(s.engine)).catch(() => setAiEngine('offline'))
+    cloudSpeechAvailable().then(setCloudSpeech).catch(() => setCloudSpeech(false))
     if ('speechSynthesis' in window) window.speechSynthesis.getVoices()
     refreshHome()
     refreshPending()
   }, [refreshPending])
+
+  // Speak: Cloud TTS (natural voice) when online + available, else browser TTS.
+  function say(text) {
+    if (online && cloudSpeech) {
+      cloudSpeak(text, lang, (reason) => {
+        // If Cloud audio couldn't play, surface why instead of silently sounding robotic.
+        showToast('Using browser voice (cloud TTS: ' + reason + ')')
+      })
+    } else speak(text, lang)
+  }
+
+  // Whether to use cloud STT/TTS right now.
+  const useCloud = online && cloudSpeech
 
   useEffect(() => { if (mode === 'orders') refreshOrders() }, [mode])
 
@@ -114,16 +131,51 @@ export default function Worker() {
     api.activity(6).then(setFeed).catch(() => {})
   }
 
+  async function deleteNote(id) {
+    setFeed(f => f.filter(n => n.id !== id))   // optimistic
+    try { await api.deleteNote(id) } catch { /* ignore */ }
+    refreshHome()
+  }
+
+  async function clearActivity() {
+    if (!window.confirm('Clear all recent activity? This cannot be undone.')) return
+    setFeed([])
+    try { await api.clearNotes(); showToast('Activity cleared.') } catch { showToast('Could not clear activity') }
+    refreshHome()
+  }
+
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(''), 3200) }
 
   function refreshOrders() {
     api.listWorkOrders().then(setOrders).catch(() => showToast('Could not load work orders'))
   }
 
-  function toggleListen() {
+  async function toggleListen() {
+    unlockAudio()  // satisfy autoplay policy so Cloud TTS can play later (user gesture)
     if (listening) { stopRef.current && stopRef.current(); return }
     setTranscript(''); setExtracted(null); setAnswer(null)
     setListening(true)
+
+    if (useCloud) {
+      // Online: record audio, send to Cloud STT (more accurate, noise-robust).
+      const rec = await recordAudio({
+        onStop: async (blob) => {
+          setListening(false); setBusy(true)
+          try {
+            const { transcript: text } = await cloudTranscribe(blob, lang)
+            setTranscript(text)
+            if (text) await handleFinal(text)
+          } catch (e) {
+            showToast('Cloud STT failed, retry or go offline for browser mode.')
+          } finally { setBusy(false) }
+        },
+        onError: (e) => { setListening(false); showToast('Mic error: ' + (e.message || 'unknown')) },
+      })
+      stopRef.current = rec.stop
+      return
+    }
+
+    // Offline / no cloud: browser Web Speech API.
     stopRef.current = listen({
       lang,
       continuous: false,
@@ -140,6 +192,7 @@ export default function Worker() {
 
   // Quick-action chip: jump to Ask mode and answer a sample question by voice-equivalent.
   function runQuickQuery(q) {
+    unlockAudio()  // user gesture — primes Cloud TTS playback
     setMode('ask'); setExtracted(null); setTranscript(q); doQuery(q)
   }
 
@@ -179,7 +232,7 @@ export default function Worker() {
     try {
       const res = await api.query(text, TECH, lang.split('-')[0])
       setAnswer(res)
-      speak(res.answer, lang) // speak the answer back in the same language
+      say(res.answer) // speak the answer back in the same language (cloud voice if online)
     } catch (e) {
       await queue.enqueue('query', { question: text, language: lang.split('-')[0] }, text)
       await refreshPending()
@@ -202,7 +255,7 @@ export default function Worker() {
         raw_transcript: transcript,
         technician: TECH,
       })
-      speak(res.confirmation, lang)        // verbal confirmation
+      say(res.confirmation)        // verbal confirmation (cloud voice if online)
       showToast(res.confirmation)
       setExtracted(null); setTranscript(''); refreshHome()
     } catch (e) {
@@ -224,7 +277,7 @@ export default function Worker() {
     }
     try {
       const res = await api.closeWorkOrder(id)
-      speak(res.confirmation, lang)
+      say(res.confirmation)
       showToast(res.confirmation)
       refreshOrders(); refreshHome()
     } catch (e) {
@@ -308,13 +361,16 @@ export default function Worker() {
             onClick={toggleListen}
             disabled={!supported || busy}
             aria-label="Push to talk">
-            {listening ? '⏸' : '🎤'}
+            {listening
+              ? <span style={{ fontSize: '2.4rem', lineHeight: 1 }}>⏹</span>
+              : <RetroMic size={74} />}
           </button>
           <div className="mic-label">{busy ? 'Processing…' : micLabel}</div>
           <div className="statusbar">
             <span className="pill"><span className={`dot ${online ? 'online' : 'offline'}`} />
               {online ? 'Online' : 'Offline'}</span>
             {aiEngine && <span className="pill">🧠 {aiEngine}</span>}
+            <span className="pill" title="Speech engine in use">🎙 {useCloud ? 'cloud voice' : 'browser'}</span>
             {pending > 0 && (
               <button className="pill" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', cursor: online ? 'pointer' : 'default' }}
                 onClick={() => online && syncQueue()} title={online ? 'Tap to sync now' : 'Will sync when online'}>
@@ -389,7 +445,7 @@ export default function Worker() {
           </div>
           <p className="bignote" style={{ marginTop: 10 }}>{answer.answer}</p>
           <div className="row" style={{ marginTop: 14 }}>
-            <button className="btn teal" onClick={() => speak(answer.answer, lang)}>🔊 Repeat</button>
+            <button className="btn teal" onClick={() => say(answer.answer)}>🔊 Repeat</button>
             {answer.asset_code && <span className="pill" style={{ alignSelf: 'center' }}>📦 {answer.asset_code}</span>}
           </div>
         </RevealCard>
@@ -433,16 +489,20 @@ export default function Worker() {
         <RevealCard style={{ marginTop: 18 }}>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
             <div className="section-title">⚡ Recent activity</div>
-            <button className="btn" style={{ padding: '8px 14px', fontSize: '0.85rem' }} onClick={refreshHome}>↻</button>
+            <div className="row" style={{ gap: 8 }}>
+              <button className="btn" style={{ padding: '8px 14px', fontSize: '0.85rem' }} onClick={refreshHome} title="Refresh">↻</button>
+              <button className="btn" style={{ padding: '8px 14px', fontSize: '0.85rem', color: 'var(--red)' }} onClick={clearActivity} title="Clear all activity">Clear</button>
+            </div>
           </div>
           <div style={{ marginTop: 6 }}>
-            {feed.map((f, i) => (
-              <div className="feed-item" key={i}>
+            {feed.map((f) => (
+              <div className="feed-item" key={f.id}>
                 <div className="feed-icon">{ICONS[f.intent] || '🗒'}</div>
                 <div className="feed-text">
                   <div className="t">{f.transcript}</div>
                   <div className="m">{LABELS[f.intent] || 'Note'} · {f.technician || 'field'} · {timeAgo(f.created_at)}</div>
                 </div>
+                <button className="feed-del" onClick={() => deleteNote(f.id)} title="Delete" aria-label="Delete note">✕</button>
               </div>
             ))}
           </div>

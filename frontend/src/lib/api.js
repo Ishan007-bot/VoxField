@@ -20,6 +20,8 @@ export const api = {
   stats: () => req('/stats'),
   activity: (limit = 8) => req(`/activity?limit=${limit}`),
   dashboard: () => req('/dashboard'),
+  deleteNote: (id) => req(`/voice-notes/${id}`, { method: 'DELETE' }),
+  clearNotes: () => req('/voice-notes', { method: 'DELETE' }),
   vocabulary: () => req('/vocabulary'),
   assets: (type) => req('/assets' + (type ? `?type=${encodeURIComponent(type)}` : '')),
   asset: (code) => req(`/assets/${encodeURIComponent(code)}`),
