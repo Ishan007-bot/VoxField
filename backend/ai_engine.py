@@ -16,42 +16,91 @@ from dotenv import load_dotenv
 
 load_dotenv()  # read backend/.env
 
+# ── Config ──────────────────────────────────────────────────────────────────
+# Two possible LLM backends, tried in this order, then rule-based fallback:
+#   1. Vertex AI  (service-account JSON) — when USE_VERTEX=true
+#   2. AI Studio  (GEMINI_API_KEY)       — when a key is set
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
-_gemini_model = None
-_gemini_error = None
+USE_VERTEX = os.getenv("USE_VERTEX", "false").strip().lower() == "true"
+VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1").strip()
+VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash").strip()
+_CRED_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+# Resolve a relative credentials path against the backend dir for convenience.
+if _CRED_PATH and not os.path.isabs(_CRED_PATH):
+    _CRED_PATH = os.path.join(os.path.dirname(__file__), _CRED_PATH)
+
+_backend = None        # "vertex" | "studio" | None — which LLM is live
+_model = None          # the model client object
+_init_error = None
 
 
-def _get_gemini():
-    """Lazily configure the Gemini client. Returns the model or None."""
-    global _gemini_model, _gemini_error
-    if not GEMINI_API_KEY:
-        return None
-    if _gemini_model is not None or _gemini_error is not None:
-        return _gemini_model
+def _project_id_from_creds():
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=GEMINI_API_KEY)
-        _gemini_model = genai.GenerativeModel(GEMINI_MODEL)
-    except Exception as e:  # bad key, missing package, etc.
-        _gemini_error = str(e)
-        _gemini_model = None
-    return _gemini_model
+        with open(_CRED_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("project_id")
+    except Exception:
+        return None
+
+
+def _init_llm():
+    """Lazily initialise the best available LLM backend. Idempotent."""
+    global _backend, _model, _init_error
+    if _backend is not None or _init_error is not None:
+        return _backend
+
+    # 1) Vertex AI via service-account JSON
+    if USE_VERTEX and _CRED_PATH and os.path.exists(_CRED_PATH):
+        try:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _CRED_PATH
+            import vertexai
+            from vertexai.generative_models import GenerativeModel
+            project = _project_id_from_creds()
+            vertexai.init(project=project, location=VERTEX_LOCATION)
+            _model = GenerativeModel(VERTEX_MODEL)
+            _backend = "vertex"
+            return _backend
+        except Exception as e:
+            _init_error = f"vertex: {e}"
+
+    # 2) AI Studio key
+    if GEMINI_API_KEY:
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=GEMINI_API_KEY)
+            _model = genai.GenerativeModel(GEMINI_MODEL)
+            _backend = "studio"
+            return _backend
+        except Exception as e:
+            _init_error = f"studio: {e}"
+
+    return None
 
 
 def gemini_available():
-    return _get_gemini() is not None
+    return _init_llm() is not None
 
 
-# Fail fast when Gemini is throttled/unreachable so we fall back to rule-based
-# in ~5s instead of the SDK's default ~28s retry storm. No automatic retries.
-def _gen(model, prompt):
-    from google.api_core import retry as _retry
-    return model.generate_content(
-        prompt,
-        request_options={"timeout": 8, "retry": _retry.Retry(deadline=8, maximum=0)},
-    )
+def llm_backend():
+    """Returns 'vertex', 'studio', or None — for /ai-status reporting."""
+    return _init_llm()
+
+
+# Fail fast when the LLM is throttled/unreachable so we fall back to rule-based
+# quickly instead of the SDK's long retry storm.
+def _generate(prompt):
+    backend = _init_llm()
+    if backend is None:
+        raise RuntimeError("no LLM backend available")
+    if backend == "studio":
+        from google.api_core import retry as _retry
+        return _model.generate_content(
+            prompt,
+            request_options={"timeout": 12, "retry": _retry.Retry(deadline=12, maximum=0)},
+        )
+    # Vertex AI client
+    return _model.generate_content(prompt)
 
 
 SEVERITY_WORDS = {
@@ -164,10 +213,9 @@ def _rule_extract(transcript, vocab):
 def extract(transcript, vocab):
     """Extract structured work-order fields from a voice transcript.
     Returns (data_dict, engine_name)."""
-    model = _get_gemini()
-    if model is not None:
+    if gemini_available():
         try:
-            resp = _gen(model, _extract_prompt(transcript, vocab))
+            resp = _generate(_extract_prompt(transcript, vocab))
             raw = (resp.text or "").strip()
             # strip ```json fences if present
             raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
@@ -242,10 +290,9 @@ def _rule_answer(question, context):
 def answer(question, context):
     """Answer a domain question from retrieved context.
     Returns (answer_text, engine_name)."""
-    model = _get_gemini()
-    if model is not None and context is not None:
+    if gemini_available() and context is not None:
         try:
-            resp = _gen(model, _answer_prompt(question, context["text"]))
+            resp = _generate(_answer_prompt(question, context["text"]))
             text = (resp.text or "").strip()
             if text:
                 return text, "gemini"

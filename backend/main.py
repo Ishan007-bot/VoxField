@@ -8,12 +8,14 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 import ai_engine
 import knowledge
+import speech_cloud
 from db import db, init_db
 from seed import seed
 
@@ -142,9 +144,51 @@ def vocabulary():
 
 @app.get("/ai-status")
 def ai_status():
-    """Tells the frontend whether Gemini is active or we're on the fallback."""
-    return {"gemini": ai_engine.gemini_available(),
-            "engine": "gemini" if ai_engine.gemini_available() else "rule-based"}
+    """Tells the frontend which AI backend is active (vertex / studio / rule-based)."""
+    backend = ai_engine.llm_backend()  # 'vertex' | 'studio' | None
+    return {
+        "gemini": backend is not None,
+        "backend": backend or "rule-based",
+        "engine": "gemini" if backend else "rule-based",
+    }
+
+
+@app.get("/speech-status")
+def speech_status():
+    """Frontend uses this to decide: cloud speech (online) vs browser speech."""
+    return {"cloud_speech": speech_cloud.cloud_available()}
+
+
+@app.post("/stt")
+async def speech_to_text(audio: UploadFile = File(...), language: str = Form("en")):
+    """Transcribe uploaded audio via Cloud STT, primed with equipment vocabulary."""
+    if not speech_cloud.cloud_available():
+        raise HTTPException(status_code=503, detail="Cloud speech not enabled")
+    data = await audio.read()
+    vocab = _vocab()
+    phrases = vocab["codes"] + vocab["names"] + vocab["procedures"]
+    try:
+        text, confidence = speech_cloud.transcribe(data, language, phrases)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"STT failed: {e}")
+    return {"transcript": text, "confidence": round(confidence, 3)}
+
+
+class TTSIn(BaseModel):
+    text: str
+    language: str | None = "en"
+
+
+@app.post("/tts")
+def text_to_speech(body: TTSIn):
+    """Synthesize speech via Cloud TTS, returning MP3 audio."""
+    if not speech_cloud.cloud_available():
+        raise HTTPException(status_code=503, detail="Cloud speech not enabled")
+    try:
+        audio = speech_cloud.synthesize(body.text, body.language or "en")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
+    return Response(content=audio, media_type="audio/mpeg")
 
 
 @app.get("/stats")
@@ -168,9 +212,27 @@ def activity(limit: int = 8):
     """Recent voice notes + work-order events for the live feed."""
     with db() as conn:
         notes = conn.execute(
-            "SELECT transcript, intent, technician, created_at FROM voice_notes "
+            "SELECT id, transcript, intent, technician, created_at FROM voice_notes "
             "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [dict(n) for n in notes]
+
+
+@app.delete("/voice-notes/{note_id}")
+def delete_voice_note(note_id: int):
+    """Remove a single voice note from the activity feed / transcripts."""
+    with db() as conn:
+        cur = conn.execute("DELETE FROM voice_notes WHERE id = ?", (note_id,))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Voice note {note_id} not found")
+    return {"deleted": note_id}
+
+
+@app.delete("/voice-notes")
+def clear_voice_notes():
+    """Clear all voice notes (handy for resetting the demo feed)."""
+    with db() as conn:
+        cur = conn.execute("DELETE FROM voice_notes")
+    return {"cleared": cur.rowcount}
 
 
 @app.get("/dashboard")
