@@ -12,11 +12,11 @@ industrial environments where screens and keyboards are unusable.
 
 | Feature | How VoxField delivers it |
 |---|---|
-| **Domain-aware voice capture** | Browser speech recognition (push-to-talk), primed with the asset registry vocabulary — equipment codes (`PMP-4471`), procedure names, locations. English / Hindi / Spanish. |
-| **Structured data extraction** | A voice note becomes a structured work order: *inspection result, fault code, location, severity, action taken, parts required.* |
+| **Domain-aware voice capture** | Push-to-talk speech, primed with the asset registry vocabulary — equipment codes (`PMP-4471`), procedure names, locations. **Hybrid:** Google Cloud Speech-to-Text when online (noise-robust, vocabulary-biased), browser Web Speech when offline. English / Hindi / Spanish. |
+| **Structured data extraction** | A voice note becomes a structured work order: *inspection result, fault code, location, severity, action taken, parts required* — via Gemini (Vertex AI). |
 | **Voice query answering** | Ask about specs, maintenance history, or procedures → answered from the knowledge base and **spoken back** in the same language, in well under 3 seconds. |
-| **Work order integration** | Create / update / close work orders by voice, with **spoken confirmation** ("Work order 12 created for PMP-4471"). |
-| **Offline capability** | Voice notes & commands queue locally (IndexedDB) when offline and **auto-sync on reconnect**. Text-confirm fallback guarantees content. |
+| **Work order integration** | Create / update / close work orders by voice, with **spoken confirmation** ("Work order 12 created for PMP-4471") in a natural Cloud TTS voice (browser TTS offline). |
+| **Offline capability** | Voice notes & commands queue locally (IndexedDB) when offline and **auto-sync on reconnect**. Speech automatically falls back to the on-device browser engine. Text-confirm fallback guarantees content. |
 | **Supervisor dashboard** | Live web view: field worker activity, work-order status, voice transcripts, and **exception alerts** for high/critical faults. |
 
 The knowledge base ships seeded with **40 industrial assets** across 11 types
@@ -28,28 +28,40 @@ pressure vessels, transformers, switchgear) — each with specs, procedures, and
 ## Architecture
 
 ```
-┌────────────────────────┐         REST / JSON        ┌──────────────────────────┐
-│  Frontend (React PWA)   │ ─────────────────────────► │  Backend (FastAPI)        │
-│  • Worker voice terminal│                            │  • Work order CRUD        │
-│  • Supervisor dashboard │ ◄───────────────────────── │  • /extract  /query       │
-│  • Web Speech STT + TTS │                            │  • /dashboard  /stats     │
-│  • IndexedDB offline q  │                            │  • AI engine (see below)  │
-└────────────────────────┘                            │  • SQLite database        │
-                                                       └──────────────────────────┘
-                                                                   │
-                                              ┌────────────────────┴───────────────────┐
-                                              │  AI engine: Gemini (primary)            │
-                                              │  + rule-based fallback (offline/no key) │
-                                              └─────────────────────────────────────────┘
+┌─────────────────────────┐        REST / JSON        ┌───────────────────────────┐
+│  Frontend (React PWA)    │ ────────────────────────► │  Backend (FastAPI)         │
+│  • Worker voice terminal │                           │  • Work order CRUD         │
+│  • Supervisor dashboard  │ ◄──────────────────────── │  • /extract  /query        │
+│  • Hybrid speech:        │                           │  • /stt  /tts  (cloud)     │
+│    cloud online /        │                           │  • /dashboard  /stats      │
+│    browser offline       │                           │  • AI + speech (below)     │
+│  • IndexedDB offline q    │                          │  • SQLite database         │
+└─────────────────────────┘                           └───────────────────────────┘
+                                                                    │
+                                          ┌─────────────────────────┴─────────────────────────┐
+                                          │  Google Cloud (one service-account credential):     │
+                                          │   • LLM  → Vertex AI (Gemini 2.5 Flash)             │
+                                          │   • STT  → Cloud Speech-to-Text   (online only)     │
+                                          │   • TTS  → Cloud Text-to-Speech   (online only)     │
+                                          │  Fallbacks: AI Studio key → rule-based; browser     │
+                                          │  Web Speech for STT/TTS when offline.               │
+                                          └─────────────────────────────────────────────────────┘
 ```
 
-- **Frontend:** React + Vite, installable **PWA**. Voice via the browser **Web Speech API**
-  (speech-to-text) and **SpeechSynthesis** (text-to-speech) — free, no API key, works in
-  Chrome/Edge. Industrial-HMI UI with dark + light themes.
+- **Frontend:** React + Vite, installable **PWA**. **Hybrid speech** — Google Cloud
+  STT/TTS when online (records mic audio → backend → Cloud Speech), automatically falling
+  back to the browser **Web Speech API** + **SpeechSynthesis** when offline. Industrial-HMI
+  UI with dark + light themes.
 - **Backend:** Python + FastAPI + SQLite. Plain SQL (no ORM) — trivial to read and to
   migrate to Postgres later if needed.
-- **AI:** Google **Gemini** (`gemini-2.0-flash`, free tier) for extraction + Q&A, behind a
-  clean interface with a **rule-based fallback** so the app works with no key and offline.
+- **AI (LLM):** Google **Gemini** for extraction + Q&A, behind a clean interface with a
+  layered fallback chain: **Vertex AI** (service-account, no rate limits) →
+  **AI Studio key** (free tier) → **rule-based** (offline / no credentials). The active
+  backend is reported at `GET /ai-status`.
+- **Speech:** **Google Cloud Speech-to-Text** (vocabulary-biased with the asset codes for
+  accuracy in noise) and **Text-to-Speech** (natural Neural2 voices). Gated by
+  `USE_CLOUD_SPEECH`; status at `GET /speech-status`. The browser engine is the offline
+  fallback, so **offline capability is preserved**.
 
 ---
 
@@ -64,18 +76,42 @@ pressure vessels, transformers, switchgear) — each with specs, procedures, and
 ```bash
 cd backend
 pip install -r requirements.txt
-
-# (optional but recommended) add a free Gemini key for best quality + full multi-language:
-#   1. get a key at https://aistudio.google.com  ->  "Get API key"
-#   2. copy the template and paste your key:
-cp .env.example .env        # then edit .env and set GEMINI_API_KEY=...
-# Without a key it still works using the rule-based fallback.
-
+cp .env.example .env        # then configure ONE of the AI options below
 python -m uvicorn main:app --port 8000
 ```
 
 The database auto-creates and seeds 40 assets on first run.
 API docs: http://127.0.0.1:8000/docs
+
+#### AI configuration (pick one; all are optional)
+
+VoxField works out of the box with **no credentials** (rule-based fallback, browser
+speech). For full quality, configure `backend/.env` with one of:
+
+**Option A — Google Cloud service-account (best: no rate limits + Cloud STT/TTS)**
+1. In Google Cloud Console (billing enabled): create a **service account**, download its
+   **JSON key**, and save it as `backend/gcp-credentials.json` *(already gitignored)*.
+2. Enable the **Vertex AI API**, **Cloud Speech-to-Text API**, and **Cloud
+   Text-to-Speech API** on the project.
+3. In `.env`:
+   ```
+   USE_VERTEX=true
+   GOOGLE_APPLICATION_CREDENTIALS=gcp-credentials.json
+   VERTEX_LOCATION=us-central1
+   VERTEX_MODEL=gemini-2.5-flash
+   USE_CLOUD_SPEECH=true          # enables Cloud STT/TTS when online
+   ```
+   The project ID is read automatically from the JSON.
+
+**Option B — AI Studio API key (simplest, free tier)**
+1. Get a free key at https://aistudio.google.com → "Get API key".
+2. In `.env`: `GEMINI_API_KEY=...` and `GEMINI_MODEL=gemini-2.5-flash`.
+   (Free tier is rate-limited to a few requests/min; the app falls back to rule-based when
+   throttled.)
+
+> **Security:** never commit `.env` or `gcp-credentials.json` — both are gitignored. A
+> service-account key is a powerful secret; if it is ever exposed, rotate it in the GCP
+> console (delete the key, create a new one).
 
 ### 2. Frontend
 
@@ -116,7 +152,8 @@ Open **http://localhost:5173** in Chrome/Edge.
 6. Create the work order. This becomes an **exception alert**.
 
 **2:00 — Offline → sync (the resilience story)**
-7. Open DevTools → **Network → Offline**. The status pill flips to **Offline**.
+7. Open DevTools → **Network → Offline**. The status pill flips to **Offline**, and the
+   speech pill switches from **`🎙 cloud voice`** to **`🎙 browser`** automatically.
 8. Record another report (or type one in the offline box). It shows **`⧖ 1 queued`**.
 9. Turn the network back **Online** → the queue **auto-syncs** and announces *"Synced 1 item."*
 
@@ -131,7 +168,7 @@ Open **http://localhost:5173** in Chrome/Edge.
 
 | Metric | How to demo / verify |
 |---|---|
-| Transcription accuracy in a noisy environment | Speak a report with background noise in Chrome; the transcript appears and is editable. |
+| Transcription accuracy in a noisy environment | Speak a report with background noise in Chrome. Online uses Cloud STT (vocabulary-biased toward equipment codes for accuracy); the transcript appears and is editable. |
 | Structured extraction maps all required fields | Step 1 above — all six fields populate from one spoken sentence. |
 | Voice query returns correct answer **< 3 s** | Step 3 — the answer card shows the measured `elapsed_ms` (typically single/double-digit ms locally). |
 | Work order creation → correct backend record | After step 1, check `GET /work-orders` or the supervisor dashboard for the structured row. |
@@ -144,17 +181,20 @@ Open **http://localhost:5173** in Chrome/Edge.
 ```
 Voice AI/
 ├── backend/
-│   ├── main.py          # FastAPI app + all routes
-│   ├── db.py            # SQLite connection + schema
-│   ├── seed.py          # 40 industrial assets + specs/procedures/history
-│   ├── ai_engine.py     # Gemini + rule-based extraction & Q&A
-│   ├── knowledge.py     # asset retrieval for Q&A
+│   ├── main.py            # FastAPI app + all routes (incl. /stt /tts /ai-status)
+│   ├── db.py              # SQLite connection + schema
+│   ├── seed.py            # 40 industrial assets + specs/procedures/history
+│   ├── ai_engine.py       # LLM: Vertex AI → AI Studio → rule-based fallback
+│   ├── speech_cloud.py    # Cloud Speech-to-Text + Text-to-Speech (online)
+│   ├── knowledge.py       # asset retrieval for Q&A
 │   ├── requirements.txt
-│   └── .env.example     # template for the Gemini key (copy to .env)
+│   ├── .env.example       # config template (copy to .env)
+│   └── gcp-credentials.json   # your service-account JSON (gitignored — you add this)
 ├── frontend/
 │   ├── src/
 │   │   ├── pages/        Worker.jsx, Supervisor.jsx
-│   │   ├── lib/          speech, api, offlineQueue, useConnectivity, useTheme, useReveal
+│   │   ├── lib/          speech (browser + cloud), api, offlineQueue,
+│   │   │                 useConnectivity, useTheme, useReveal
 │   │   ├── components/   Reveal.jsx
 │   │   └── styles.css    industrial-HMI design system (dark + light)
 │   └── vite.config.js    PWA config + dev proxy
@@ -162,10 +202,14 @@ Voice AI/
 ```
 
 ## Notes & limitations (honest)
-- **Voice features need Chrome or Edge** — the Web Speech API isn't reliable in Firefox/Safari.
-  The app detects this and shows a notice.
-- **Full multi-language extraction/Q&A** is best with a Gemini key set; the offline
-  rule-based fallback is tuned for English.
+- **Hybrid speech by design:** Cloud STT/TTS need internet, so when offline the app falls
+  back to the browser engine. This keeps the **offline capability** intact while giving
+  better accuracy and natural voices online.
+- **Voice still needs Chrome or Edge** — the offline browser fallback uses the Web Speech
+  API, which isn't reliable in Firefox/Safari. The app detects this and shows a notice.
+- **Cloud STT/TTS require a billing-enabled GCP project.** Without cloud credentials the
+  app uses browser speech only; without any LLM credentials it uses the rule-based
+  extractor (English-tuned).
 - **SQLite** is ideal for this scale and for demos (zero setup). For a multi-writer cloud
   deployment, swap the DB layer to Postgres — the SQL is standard.
 
@@ -173,4 +217,7 @@ Voice AI/
 - **Frontend:** `npm run build` → deploy `frontend/dist/` to any static host (Vercel/Netlify).
   Set `VITE_API_BASE` to the backend URL.
 - **Backend:** deploy to a real-server host (Render / Railway / Fly.io) with a persistent
-  disk for the SQLite file. Set `GEMINI_API_KEY` in the host's environment.
+  disk for the SQLite file. Provide the AI credentials via the host's environment/secrets:
+  either `GEMINI_API_KEY`, or the service-account JSON + `USE_VERTEX=true` /
+  `USE_CLOUD_SPEECH=true` (mount the JSON as a secret file and point
+  `GOOGLE_APPLICATION_CREDENTIALS` at it). **Never bake credentials into the image.**
