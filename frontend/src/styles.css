@@ -287,3 +287,36 @@ a.navlink { font-family: var(--display); color: var(--cyan); font-weight: 600; t
 body, .card, .btn, .tab, .mic-btn, .pill, select.lang, .icon-btn, .stat {
   transition: background 0.3s var(--ease), color 0.3s var(--ease), border-color 0.3s var(--ease), box-shadow 0.3s var(--ease);
 }
+
+/* ---------- Confidence bars ---------- */
+.confidence-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--edge); }
+.confidence-bars { display: flex; flex-direction: column; gap: 6px; }
+.conf-row { display: flex; align-items: center; gap: 10px; }
+.conf-label { font-family: var(--mono); font-size: 0.66rem; font-weight: 500; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.08em; width: 90px; flex-shrink: 0; }
+.conf-track { flex: 1; height: 6px; background: var(--bg-2); border-radius: 3px; border: 1px solid var(--edge); overflow: hidden; }
+.conf-fill { height: 100%; border-radius: 3px; transition: width 0.4s var(--ease); }
+.conf-pct { font-family: var(--mono); font-size: 0.66rem; font-weight: 700; width: 36px; text-align: right; }
+
+/* ---------- Noise demo ---------- */
+.noise-demo { padding: 10px 0; }
+.active-chip { border-color: var(--cyan) !important; color: var(--cyan) !important; }
+
+/* ---------- Escalation panel ---------- */
+.escalation-panel { position: relative; }
+.escalation-item { padding: 10px 0; border-bottom: 1px solid var(--edge); }
+.escalation-item:last-child { border-bottom: none; }
+
+/* ---------- Technician select ---------- */
+.tech-select { display: inline-flex; flex-direction: column; }
+
+/* ---------- Charts ---------- */
+.recharts-default-tooltip { border-radius: 6px !important; }
+.recharts-legend-item-text { font-size: 0.72rem !important; }
+
+/* ---------- Stats 7-col for supervisor ---------- */
+@media (max-width: 1000px) {
+  .stats[style*="7"] { grid-template-columns: repeat(4, 1fr) !important; }
+}
+@media (max-width: 600px) {
+  .stats[style*="7"] { grid-template-columns: repeat(3, 1fr) !important; }
+}

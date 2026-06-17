@@ -37,6 +37,12 @@ export const api = {
   createWorkOrder: (wo) => req('/work-orders', { method: 'POST', body: JSON.stringify(wo) }),
   updateWorkOrder: (id, patch) => req(`/work-orders/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   closeWorkOrder: (id) => req(`/work-orders/${id}/close`, { method: 'POST' }),
+
+  // Escalations
+  createEscalation: (esc) => req('/escalations', { method: 'POST', body: JSON.stringify(esc) }),
+  listEscalations: (status) => req('/escalations' + (status ? `?status=${status}` : '')),
+  acknowledgeEscalation: (id) => req(`/escalations/${id}?status=acknowledged`, { method: 'PATCH' }),
+  resolveEscalation: (id) => req(`/escalations/${id}?status=resolved`, { method: 'PATCH' }),
 }
 
 // Simple connectivity check used by the offline queue (Phase 4).

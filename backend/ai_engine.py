@@ -113,6 +113,14 @@ SEVERITY_WORDS = {
 FIELDS = ["inspection_result", "fault_code", "location", "severity",
           "action_taken", "parts_required", "asset_code", "intent"]
 
+ESCALATION_WORDS = ["escalate", "escalation", "escalate to", "escalate two",
+                    "estimate the supervisor", "estimate to supervisor",
+                    "supervisor", "manager", "urgent help",
+                    "need backup", "send help", "emergency", "critical failure",
+                    "cannot handle", "too dangerous", "safety issue", "hazard",
+                    "send supervisor", "call supervisor", "get supervisor",
+                    "need supervisor", "alert supervisor"]
+
 
 # ---------------------------------------------------------------------------
 # EXTRACTION
@@ -130,7 +138,7 @@ Known procedures: {procs}
 Known locations: {locs}
 
 Return ONLY a JSON object with EXACTLY these keys (use null if truly not mentioned):
-  "intent": one of "create_wo", "update_wo", "close_wo", "query", "note"
+  "intent": one of "create_wo", "update_wo", "close_wo", "query", "escalate", "note"
   "asset_code": the equipment code mentioned, normalised like "PMP-4471", or null
   "inspection_result": short summary of what was found / the condition observed
   "fault_code": any fault/error code or short fault label, or null
@@ -138,6 +146,7 @@ Return ONLY a JSON object with EXACTLY these keys (use null if truly not mention
   "severity": one of "low", "medium", "high", "critical" based on the note
   "action_taken": what the technician did, or null if nothing done yet
   "parts_required": comma-separated parts needed, or null
+  "confidence": a dict with per-field confidence: {{"asset_code": 0.0-1.0, "severity": 0.0-1.0, ...}} for all fields above
 
 Voice note: \"\"\"{transcript}\"\"\"
 
@@ -197,7 +206,10 @@ def _rule_extract(transcript, vocab):
     result["inspection_result"] = re.split(r"[.;]", text.strip())[0][:140] or text[:140]
 
     # intent
-    if any(w in low for w in ["close", "complete", "completed", "done", "finished"]):
+    if any(w in low for w in ESCALATION_WORDS):
+        result["intent"] = "escalate"
+        result["severity"] = result["severity"] or "critical"
+    elif any(w in low for w in ["close", "complete", "completed", "done", "finished"]):
         result["intent"] = "close_wo"
     elif any(w in low for w in ["update", "add to", "change"]):
         result["intent"] = "update_wo"
@@ -206,6 +218,17 @@ def _rule_extract(transcript, vocab):
         result["intent"] = "query"
     else:
         result["intent"] = "create_wo"
+
+    # Per-field confidence (rule-based: binary — 1.0 if extracted, 0.0 if null)
+    confidence = {}
+    for k in FIELDS:
+        if k == "intent":
+            confidence[k] = 0.9  # intent detection is fairly reliable
+        elif k == "confidence":
+            continue
+        else:
+            confidence[k] = 1.0 if result.get(k) else 0.0
+    result["confidence"] = confidence
 
     return result
 
@@ -223,6 +246,9 @@ def extract(transcript, vocab):
             # ensure all expected keys exist
             for k in FIELDS:
                 data.setdefault(k, None)
+            # ensure confidence dict exists
+            if "confidence" not in data or not isinstance(data.get("confidence"), dict):
+                data["confidence"] = {k: (0.85 if data.get(k) else 0.0) for k in FIELDS if k != "confidence"}
             return data, "gemini"
         except Exception:
             pass  # fall through to rule-based

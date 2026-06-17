@@ -62,10 +62,25 @@ CREATE TABLE IF NOT EXISTS work_orders (
 CREATE TABLE IF NOT EXISTS voice_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     transcript TEXT NOT NULL,
-    intent TEXT,                       -- create_wo | query | update_wo | close_wo | note
+    intent TEXT,                       -- create_wo | query | update_wo | close_wo | escalate | note
     technician TEXT,
     work_order_id INTEGER,
+    confidence REAL,                   -- STT transcription confidence 0.0-1.0
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS escalations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_order_id INTEGER,
+    asset_code TEXT,
+    severity TEXT NOT NULL DEFAULT 'critical',
+    reason TEXT,                       -- why the technician escalated
+    location TEXT,
+    technician TEXT,
+    status TEXT NOT NULL DEFAULT 'open',  -- open | acknowledged | resolved
+    created_at TEXT NOT NULL,
+    resolved_at TEXT,
+    FOREIGN KEY (work_order_id) REFERENCES work_orders(id)
 );
 """
 

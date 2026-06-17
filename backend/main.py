@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 import ai_engine
 import knowledge
+import rag_engine
 import speech_cloud
 from db import db, init_db
 from seed import seed
@@ -41,9 +42,14 @@ def _vocab():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # On startup: create tables and seed assets if the DB is empty.
+    # On startup: create tables, seed assets, and warm up the RAG index.
     init_db()
     seed()
+    # Warm the RAG index in background (non-blocking if deps missing).
+    try:
+        rag_engine.rag_available()
+    except Exception:
+        pass
     yield
 
 
@@ -150,6 +156,7 @@ def ai_status():
         "gemini": backend is not None,
         "backend": backend or "rule-based",
         "engine": "gemini" if backend else "rule-based",
+        "rag": rag_engine.rag_available(),
     }
 
 
@@ -246,11 +253,14 @@ def dashboard():
         transcripts = [dict(r) for r in conn.execute(
             "SELECT id, transcript, intent, technician, work_order_id, created_at "
             "FROM voice_notes ORDER BY created_at DESC LIMIT 30").fetchall()]
-        # Per-technician activity: note count + last seen
+        # Per-technician activity: combine voice_notes + work_orders for full picture
         techs = [dict(r) for r in conn.execute(
             "SELECT technician, COUNT(*) AS notes, MAX(created_at) AS last_seen "
-            "FROM voice_notes WHERE technician IS NOT NULL "
-            "GROUP BY technician ORDER BY last_seen DESC").fetchall()]
+            "FROM ("
+            "  SELECT technician, created_at FROM voice_notes WHERE technician IS NOT NULL "
+            "  UNION ALL "
+            "  SELECT technician, created_at FROM work_orders WHERE technician IS NOT NULL"
+            ") GROUP BY technician ORDER BY last_seen DESC").fetchall()]
         assets = conn.execute("SELECT COUNT(*) n FROM assets").fetchone()["n"]
 
     # Exception alerts = open high/critical work orders (the things a supervisor must act on).
@@ -264,6 +274,29 @@ def dashboard():
         if wo["status"] != "closed" and wo["severity"] in ("high", "critical")
     ]
 
+    # Escalations
+    with db() as conn:
+        escalations = [dict(r) for r in conn.execute(
+            "SELECT * FROM escalations ORDER BY created_at DESC").fetchall()]
+
+    # Work order timeline (for charts) — group by date
+    wo_by_date = {}
+    for wo in work_orders:
+        day = wo["created_at"][:10] if wo.get("created_at") else "unknown"
+        wo_by_date.setdefault(day, {"open": 0, "closed": 0})
+        if wo["status"] == "closed":
+            wo_by_date[day]["closed"] += 1
+        else:
+            wo_by_date[day]["open"] += 1
+    timeline = [{"date": d, **v} for d, v in sorted(wo_by_date.items())]
+
+    # Severity distribution
+    sev_dist = {}
+    for wo in work_orders:
+        s = wo.get("severity") or "unset"
+        sev_dist[s] = sev_dist.get(s, 0) + 1
+    severity_chart = [{"name": k, "value": v} for k, v in sev_dist.items()]
+
     stats = {
         "assets": assets,
         "total_work_orders": len(work_orders),
@@ -272,9 +305,11 @@ def dashboard():
         "critical_open": len(alerts),
         "voice_notes": len(transcripts),
         "active_technicians": len(techs),
+        "escalations_open": sum(1 for e in escalations if e["status"] == "open"),
     }
     return {"stats": stats, "work_orders": work_orders, "transcripts": transcripts,
-            "technicians": techs, "alerts": alerts}
+            "technicians": techs, "alerts": alerts, "escalations": escalations,
+            "timeline": timeline, "severity_chart": severity_chart}
 
 
 # ===========================================================================
@@ -340,8 +375,9 @@ def extract_fields(body: ExtractIn):
     started = time.perf_counter()
     data, engine = ai_engine.extract(body.transcript, _vocab())
     elapsed_ms = round((time.perf_counter() - started) * 1000)
+    confidence = data.pop("confidence", {})
     _log_voice_note(body.transcript, data.get("intent"), body.technician)
-    return {"fields": data, "engine": engine, "elapsed_ms": elapsed_ms}
+    return {"fields": data, "confidence": confidence, "engine": engine, "elapsed_ms": elapsed_ms}
 
 
 @app.post("/query")
@@ -357,6 +393,7 @@ def query(body: QueryIn):
         "answer": answer_text,
         "asset_code": context["asset"]["code"] if context else None,
         "engine": engine,
+        "retrieval": context.get("retrieval_method", "keyword") if context else "none",
         "elapsed_ms": elapsed_ms,
     }
 
@@ -443,3 +480,73 @@ def close_work_order(wo_id: int):
         row = conn.execute("SELECT * FROM work_orders WHERE id = ?", (wo_id,)).fetchone()
     return {"work_order": _wo_to_dict(row),
             "confirmation": f"Work order {wo_id} closed."}
+
+
+# ===========================================================================
+# Escalations
+# ===========================================================================
+
+class EscalationIn(BaseModel):
+    asset_code: str | None = None
+    reason: str | None = None
+    location: str | None = None
+    severity: str | None = "critical"
+    technician: str | None = None
+    work_order_id: int | None = None
+
+
+@app.post("/escalations")
+def create_escalation(body: EscalationIn):
+    """Escalate a fault to supervisor attention."""
+    now = _now()
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO escalations "
+            "(work_order_id, asset_code, severity, reason, location, technician, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
+            (body.work_order_id, body.asset_code, body.severity or "critical",
+             body.reason, body.location, body.technician, now),
+        )
+        esc_id = cur.lastrowid
+        # Log the escalation as a voice note too
+        conn.execute(
+            "INSERT INTO voice_notes (transcript, intent, technician, created_at) "
+            "VALUES (?, 'escalate', ?, ?)",
+            (body.reason or f"Escalation for {body.asset_code or 'unknown asset'}", body.technician, now),
+        )
+    return {
+        "escalation_id": esc_id,
+        "confirmation": f"Escalation {esc_id} created"
+                        + (f" for {body.asset_code}" if body.asset_code else "")
+                        + ". Supervisor has been alerted.",
+    }
+
+
+@app.get("/escalations")
+def list_escalations(status: str | None = None):
+    with db() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT * FROM escalations WHERE status = ? ORDER BY created_at DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM escalations ORDER BY created_at DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.patch("/escalations/{esc_id}")
+def update_escalation(esc_id: int, status: str = "acknowledged"):
+    now = _now()
+    resolved = now if status == "resolved" else None
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE escalations SET status = ?, resolved_at = COALESCE(?, resolved_at) WHERE id = ?",
+            (status, resolved, esc_id),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"Escalation {esc_id} not found")
+        row = conn.execute("SELECT * FROM escalations WHERE id = ?", (esc_id,)).fetchone()
+    return dict(row)

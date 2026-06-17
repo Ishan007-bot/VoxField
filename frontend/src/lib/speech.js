@@ -22,29 +22,65 @@ export function listen({ lang = 'en-US', continuous = false, onResult, onEnd, on
     onError && onError(new Error('Speech recognition not supported in this browser.'))
     return () => {}
   }
-  recognition = new SR()
-  recognition.lang = lang
-  recognition.continuous = continuous
-  recognition.interimResults = true
-  recognition.maxAlternatives = 1
 
-  let finalText = ''
-  recognition.onresult = (e) => {
-    let interim = ''
-    for (let i = e.resultIndex; i < e.results.length; i++) {
-      const tr = e.results[i][0].transcript
-      if (e.results[i].isFinal) finalText += tr + ' '
-      else interim += tr
+  // Persists across recognition restarts — never lost.
+  let committed = ''     // text from completed recognition sessions
+  let stopped = false
+
+  function startSession() {
+    if (stopped) return
+    const rec = new SR()
+    recognition = rec    // global ref so stop() can reach it
+    rec.lang = lang
+    rec.continuous = true
+    rec.interimResults = true
+    rec.maxAlternatives = 1
+
+    // Track which results in THIS session have been finalized,
+    // so we never double-count when Chrome re-fires resultIndex 0.
+    let sessionFinal = ''
+    let counted = 0      // how many results[] we've already counted as final
+
+    rec.onresult = (e) => {
+      let interim = ''
+      sessionFinal = ''
+      // Rebuild sessionFinal from ALL final results in this session.
+      // This is safe even if Chrome replays from index 0.
+      for (let i = 0; i < e.results.length; i++) {
+        const tr = e.results[i][0].transcript
+        if (e.results[i].isFinal) sessionFinal += tr + ' '
+        else interim += tr
+      }
+      onResult && onResult((committed + sessionFinal + interim).trim(), false)
     }
-    onResult && onResult((finalText + interim).trim(), false)
+
+    rec.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') return
+      onError && onError(e)
+    }
+
+    rec.onend = () => {
+      // Commit whatever this session finalized before it ended.
+      committed += sessionFinal
+      sessionFinal = ''
+      if (!stopped) {
+        // Browser auto-stopped (timeout / silence) — restart seamlessly.
+        setTimeout(startSession, 80)
+        return
+      }
+      onResult && onResult(committed.trim(), true)
+      onEnd && onEnd(committed.trim())
+    }
+
+    try { rec.start() } catch (_) {}
   }
-  recognition.onerror = (e) => onError && onError(e)
-  recognition.onend = () => {
-    onResult && onResult(finalText.trim(), true)
-    onEnd && onEnd(finalText.trim())
+
+  startSession()
+
+  return () => {
+    stopped = true
+    try { recognition && recognition.stop() } catch (_) {}
   }
-  recognition.start()
-  return () => { try { recognition && recognition.stop() } catch (_) {} }
 }
 
 // Speak text aloud, picking a voice that matches the language if available.
@@ -63,6 +99,87 @@ export function speak(text, lang = 'en-US') {
 
 export function stopSpeaking() {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+}
+
+// ── Continuous listening with silence detection ──────────────────────────────
+// Keeps the recognizer running and auto-segments on silence pauses.
+// onSegment(text) fires each time a pause is detected with the accumulated text.
+// Returns { stop } to end continuous mode.
+export function listenContinuous({ lang = 'en-US', silenceMs = 2000, onResult, onSegment, onError }) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+  if (!SR) {
+    onError && onError(new Error('Speech recognition not supported'))
+    return { stop: () => {} }
+  }
+
+  let stopped = false
+  let segmentText = ''
+  let silenceTimer = null
+
+  function resetSilenceTimer() {
+    if (silenceTimer) clearTimeout(silenceTimer)
+    silenceTimer = setTimeout(() => {
+      if (segmentText.trim() && onSegment) {
+        onSegment(segmentText.trim())
+        segmentText = ''
+      }
+    }, silenceMs)
+  }
+
+  function startRec() {
+    if (stopped) return
+    const rec = new SR()
+    rec.lang = lang
+    rec.continuous = true
+    rec.interimResults = true
+    rec.maxAlternatives = 1
+
+    rec.onresult = (e) => {
+      let interim = ''
+      let finalChunk = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const tr = e.results[i][0].transcript
+        if (e.results[i].isFinal) {
+          finalChunk += tr + ' '
+          segmentText += tr + ' '
+        } else {
+          interim += tr
+        }
+      }
+      onResult && onResult((segmentText + interim).trim())
+      if (finalChunk) resetSilenceTimer()
+    }
+
+    rec.onerror = (e) => {
+      if (e.error === 'no-speech' || e.error === 'aborted') {
+        // Restart on no-speech timeout (browser auto-stops after ~5s silence)
+        if (!stopped) setTimeout(startRec, 100)
+        return
+      }
+      onError && onError(e)
+    }
+
+    rec.onend = () => {
+      // Auto-restart unless explicitly stopped
+      if (!stopped) setTimeout(startRec, 100)
+    }
+
+    try { rec.start() } catch {}
+    recognition = rec
+  }
+
+  startRec()
+  resetSilenceTimer()
+
+  return {
+    stop: () => {
+      stopped = true
+      if (silenceTimer) clearTimeout(silenceTimer)
+      // Fire final segment if any
+      if (segmentText.trim() && onSegment) onSegment(segmentText.trim())
+      try { recognition && recognition.stop() } catch {}
+    }
+  }
 }
 
 // ── Cloud speech (used when online) ─────────────────────────────────────────
