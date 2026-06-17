@@ -57,6 +57,7 @@ export default function Worker() {
   const [stats, setStats] = useState(null)
   const [feed, setFeed] = useState([])
   const [pending, setPending] = useState(0)
+  const [failed, setFailed] = useState(0)   // queue items that exhausted auto-retry
   const [syncing, setSyncing] = useState(false)
   const [textNote, setTextNote] = useState('')   // offline text-confirm fallback
   const stopRef = useRef(null)
@@ -65,6 +66,7 @@ export default function Worker() {
 
   const refreshPending = useCallback(async () => {
     setPending(await queue.pendingCount())
+    setFailed(await queue.errorCount())
   }, [])
 
   // Process one queued item against the backend. Throws on failure (stays queued).
@@ -90,16 +92,26 @@ export default function Worker() {
   const syncQueue = useCallback(async () => {
     setSyncing(true)
     try {
-      const { synced, failed } = await queue.drain(processItem)
+      const { synced, retrying, failed } = await queue.drain(processItem)
       await queue.clearDone()
       await refreshPending()
       if (synced > 0) {
         showToast(`Synced ${synced} queued ${synced === 1 ? 'item' : 'items'}.`)
         refreshHome(); if (mode === 'orders') refreshOrders()
       }
-      if (failed > 0) showToast(`${failed} item(s) failed to sync — will retry.`)
+      // Honest status: transient failures retry automatically; only items that
+      // exhausted their attempts ask the worker to retry by hand.
+      if (failed > 0) showToast(`${failed} item(s) couldn't sync after several tries — tap the queue to retry.`)
+      else if (retrying > 0) showToast(`${retrying} item(s) didn't sync — retrying automatically.`)
     } finally { setSyncing(false) }
   }, [processItem, refreshPending, mode])
+
+  // Manual retry of items that exhausted auto-retry: re-arm them, then sync.
+  const retrySync = useCallback(async () => {
+    await queue.retryErrored()
+    await refreshPending()
+    await syncQueue()
+  }, [refreshPending, syncQueue])
 
   const { online } = useConnectivity(syncQueue)
 
@@ -371,10 +383,17 @@ export default function Worker() {
               {online ? 'Online' : 'Offline'}</span>
             {aiEngine && <span className="pill">🧠 {aiEngine}</span>}
             <span className="pill" title="Speech engine in use">🎙 {useCloud ? 'cloud voice' : 'browser'}</span>
-            {pending > 0 && (
-              <button className="pill" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', cursor: online ? 'pointer' : 'default' }}
-                onClick={() => online && syncQueue()} title={online ? 'Tap to sync now' : 'Will sync when online'}>
-                {syncing ? '⟳ syncing…' : `⧖ ${pending} queued`}
+            {(pending > 0 || failed > 0) && (
+              <button className="pill"
+                style={{ borderColor: failed ? 'var(--red)' : 'var(--amber)',
+                         color: failed ? 'var(--red)' : 'var(--amber)',
+                         cursor: online ? 'pointer' : 'default' }}
+                onClick={() => online && (failed ? retrySync() : syncQueue())}
+                title={online ? (failed ? 'Tap to retry failed items' : 'Tap to sync now')
+                              : 'Will sync when online'}>
+                {syncing ? '⟳ syncing…'
+                  : failed ? `⚠ ${failed} failed — retry`
+                  : `⧖ ${pending} queued`}
               </button>
             )}
           </div>
