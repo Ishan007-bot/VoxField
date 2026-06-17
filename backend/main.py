@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 import ai_engine
 import knowledge
@@ -297,6 +297,17 @@ class QueryIn(BaseModel):
     language: str | None = "en"
 
 
+VALID_SEVERITIES = {"low", "medium", "high", "critical"}
+VALID_STATUSES = {"open", "in_progress", "closed"}
+
+
+def _strip_or_none(v: str | None) -> str | None:
+    if v is None:
+        return None
+    stripped = v.strip()
+    return stripped if stripped else None
+
+
 class WorkOrderIn(BaseModel):
     asset_code: str | None = None
     inspection_result: str | None = None
@@ -309,6 +320,52 @@ class WorkOrderIn(BaseModel):
     raw_transcript: str | None = None
     technician: str | None = None
 
+    @field_validator("asset_code")
+    @classmethod
+    def validate_asset_code(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and len(v) > 20:
+            raise ValueError("asset_code must be 20 characters or fewer")
+        return v
+
+    @field_validator("fault_code")
+    @classmethod
+    def validate_fault_code(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and len(v) > 50:
+            raise ValueError("fault_code must be 50 characters or fewer")
+        return v
+
+    @field_validator("location")
+    @classmethod
+    def validate_location(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and len(v) > 100:
+            raise ValueError("location must be 100 characters or fewer")
+        return v
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and v.lower() not in VALID_SEVERITIES:
+            raise ValueError(f"severity must be one of: {', '.join(sorted(VALID_SEVERITIES))}")
+        return v.lower() if v else v
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and v.lower() not in VALID_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(VALID_STATUSES))}")
+        return v.lower() if v else v
+
+    @field_validator("inspection_result", "action_taken", "parts_required",
+                     "raw_transcript", "technician")
+    @classmethod
+    def strip_text_fields(cls, v):
+        return _strip_or_none(v)
+
 
 class WorkOrderUpdate(BaseModel):
     inspection_result: str | None = None
@@ -318,6 +375,43 @@ class WorkOrderUpdate(BaseModel):
     action_taken: str | None = None
     parts_required: str | None = None
     status: str | None = None
+
+    @field_validator("fault_code")
+    @classmethod
+    def validate_fault_code(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and len(v) > 50:
+            raise ValueError("fault_code must be 50 characters or fewer")
+        return v
+
+    @field_validator("location")
+    @classmethod
+    def validate_location(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and len(v) > 100:
+            raise ValueError("location must be 100 characters or fewer")
+        return v
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and v.lower() not in VALID_SEVERITIES:
+            raise ValueError(f"severity must be one of: {', '.join(sorted(VALID_SEVERITIES))}")
+        return v.lower() if v else v
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        v = _strip_or_none(v)
+        if v is not None and v.lower() not in VALID_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(VALID_STATUSES))}")
+        return v.lower() if v else v
+
+    @field_validator("inspection_result", "action_taken", "parts_required")
+    @classmethod
+    def strip_text_fields(cls, v):
+        return _strip_or_none(v)
 
 
 def _wo_to_dict(row):
