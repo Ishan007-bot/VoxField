@@ -38,7 +38,7 @@ class TestHealthAndStatus:
         assert r.status_code == 200
         data = r.json()
         assert "engine" in data
-        assert "rag" in data  # RAG status included
+        assert "backend" in data  # which LLM backend is live
 
     def test_speech_status(self):
         r = client.get("/speech-status")

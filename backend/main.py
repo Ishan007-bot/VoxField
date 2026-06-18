@@ -15,7 +15,6 @@ from pydantic import BaseModel, field_validator, model_validator
 
 import ai_engine
 import knowledge
-import rag_engine
 import speech_cloud
 from db import db, init_db
 from seed import seed
@@ -42,14 +41,9 @@ def _vocab():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # On startup: create tables, seed assets, and warm up the RAG index.
+    # On startup: create tables and seed assets if the DB is empty.
     init_db()
     seed()
-    # Warm the RAG index in background (non-blocking if deps missing).
-    try:
-        rag_engine.rag_available()
-    except Exception:
-        pass
     yield
 
 
@@ -156,7 +150,6 @@ def ai_status():
         "gemini": backend is not None,
         "backend": backend or "rule-based",
         "engine": "gemini" if backend else "rule-based",
-        "rag": rag_engine.rag_available(),
     }
 
 

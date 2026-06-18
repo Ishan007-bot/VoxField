@@ -3,16 +3,14 @@ and pull together specs, history, and procedures as context for the Q&A engine.
 
 Retrieval strategy (tried in order):
   1. Explicit asset code in the text (e.g. "PMP-4471").
-  2. RAG / semantic vector search via sentence-transformers + FAISS.
-  3. Fuzzy-match asset names / types / locations with rapidfuzz.
-This keeps Q&A well under the 3-second target even on the rule-based path.
+  2. Fuzzy-match asset names / types / locations with rapidfuzz.
+This keeps Q&A well under the 3-second target.
 """
 import json
 import re
 from rapidfuzz import fuzz, process
 
 from db import db
-import rag_engine
 
 # Matches codes like PMP-4471, HEX-8001, SWG-200, TRF-100, etc.
 CODE_RE = re.compile(r"\b([A-Z]{2,4})[\s-]?(\d{2,4})\b", re.IGNORECASE)
@@ -47,25 +45,19 @@ def find_asset(text):
             if code.replace("-", "") == loose:
                 return a
 
-    # 2) RAG semantic search — uses embeddings for robust matching.
-    if rag_engine.rag_available():
-        rag_result = rag_engine.find_best_asset(text)
-        if rag_result:
-            return rag_result
-
-    # 3) Fuzzy match against names (and fall back to type + location).
+    # 2) Fuzzy match against names (and fall back to type + location).
     names = {a["name"]: a for a in assets}
     best = process.extractOne(text, names.keys(), scorer=fuzz.partial_ratio)
     if best and best[1] >= 75:
         return names[best[0]]
 
-    # 4) Match by asset type keyword (e.g. "the boiler feed pump", "a transformer").
+    # 3) Match by asset type keyword (e.g. "the boiler feed pump", "a transformer").
     lowered = (text or "").lower()
     for a in assets:
         if a["type"].lower() in lowered or a["name"].lower() in lowered:
             return a
 
-    # 5) Last resort: best name match even if weak, so we have *something*.
+    # 4) Last resort: best name match even if weak, so we have *something*.
     if best and best[1] >= 50:
         return names[best[0]]
     return None
@@ -115,11 +107,10 @@ def asset_context(asset):
 
 
 def retrieve(question):
-    """Return context for the asset most relevant to the question (or None).
-    Includes RAG retrieval method in the result for transparency."""
+    """Return context for the asset most relevant to the question (or None)."""
     asset = find_asset(question)
     if not asset:
         return None
     ctx = asset_context(asset)
-    ctx["retrieval_method"] = "rag" if rag_engine.rag_available() else "keyword"
+    ctx["retrieval_method"] = "keyword"
     return ctx

@@ -14,7 +14,7 @@ industrial environments where screens and keyboards are unusable.
 |---|---|
 | **Domain-aware voice capture** | Push-to-talk + **continuous hands-free** speech capture with silence detection. Primed with asset vocabulary (equipment codes, procedures, locations). **Hybrid:** Google Cloud STT when online (noise-robust, vocabulary-biased), browser Web Speech when offline. English / Hindi / Spanish. **Noise simulation** demo to prove accuracy. |
 | **Structured data extraction** | Voice note → structured work order: *inspection result, fault code, location, severity, action taken, parts required* — via Gemini (Vertex AI). **Per-field confidence scoring** with re-prompt on low confidence. |
-| **Voice query answering** | Ask about specs, maintenance history, or procedures → answered from the knowledge base via **RAG (Gemini embeddings + cosine similarity search)** and **spoken back** in the same language. Response time displayed (well under 3 seconds). |
+| **Voice query answering** | Ask about specs, maintenance history, or procedures → answered from the knowledge base (asset-code + fuzzy retrieval) and **spoken back** in the same language. Response time displayed (well under 3 seconds). |
 | **Work order integration** | Create / update / close work orders by voice, with **spoken confirmation**. Full CRUD with severity tracking. |
 | **Fault escalation** | Say "escalate to supervisor" → auto-creates an escalation alert visible on the supervisor dashboard with real-time status (open → acknowledged → resolved). |
 | **Offline capability** | Voice notes & commands queue locally (IndexedDB) when offline and **auto-sync on reconnect**. Speech falls back to on-device browser engine. Text-confirm fallback guarantees content. |
@@ -36,14 +36,13 @@ pressure vessels, transformers, switchgear) — each with specs, procedures, and
 │  • Hybrid speech:        │                           │  • /extract  /query        │
 │    cloud online /        │                           │  • /stt  /tts  (cloud)     │
 │    browser offline       │                           │  • /dashboard  /stats      │
-│  • Continuous + PTT mode │                           │  • AI + RAG + speech       │
+│  • Continuous + PTT mode │                           │  • AI + speech             │
 │  • IndexedDB offline q   │                           │  • SQLite database         │
 └─────────────────────────┘                           └───────────────────────────┘
                                                                     │
                                           ┌─────────────────────────┴─────────────────────────┐
                                           │  AI / ML Stack:                                     │
                                           │   • LLM  → Vertex AI (Gemini 2.5 Flash)             │
-                                          │   • RAG  → Gemini embeddings + cosine search          │
                                           │   • STT  → Cloud Speech-to-Text   (online only)     │
                                           │   • TTS  → Cloud Text-to-Speech   (online only)     │
                                           │  Fallbacks: AI Studio key → rule-based; browser     │
@@ -58,7 +57,7 @@ pressure vessels, transformers, switchgear) — each with specs, procedures, and
 | **Frontend** | React 18 + Vite PWA, Recharts |
 | **Backend** | Python + FastAPI + SQLite |
 | **LLM** | Google Gemini (Vertex AI / AI Studio) with rule-based fallback |
-| **RAG** | Gemini text-embedding-004 + scikit-learn cosine similarity |
+| **Retrieval** | Asset-code match + rapidfuzz fuzzy search over the asset registry |
 | **Speech** | Cloud STT/TTS + Web Speech API (hybrid) |
 | **Offline** | IndexedDB + Service Worker (PWA) |
 | **Testing** | pytest (extraction, API, offline sync) |
@@ -81,7 +80,6 @@ python -m uvicorn main:app --port 8000
 ```
 
 The database auto-creates and seeds 40 assets on first run.
-The RAG index builds automatically on startup (uses Gemini embeddings — needs API key or Vertex AI).
 API docs: http://127.0.0.1:8000/docs
 
 #### AI configuration (pick one; all are optional)
@@ -160,7 +158,7 @@ Tests cover:
 **0:45 — Query equipment history (voice answer in <3s)**
 5. Switch to the **Ask** tab, tap the mic, and say:
    > *"When was the last maintenance on PMP-4471?"*
-6. VoxField speaks the answer aloud and shows response time + retrieval method (`RAG` or `keyword`).
+6. VoxField speaks the answer aloud and shows the response time (well under 3 seconds).
 
 **1:15 — Escalate a fault**
 7. Back on **Report**, say:
@@ -192,7 +190,7 @@ Tests cover:
 |---|---|
 | **Transcription accuracy in noisy environment** | Enable noise simulation (Factory/Outdoor/Workshop), speak a report → Cloud STT captures accurately. Per-field confidence bars show extraction quality. Run `pytest test_extraction.py` for 12 transcript accuracy tests. |
 | **Structured extraction maps all required fields** | Step 1 above — all 7 fields populate. Confidence bars show per-field scores. Extraction tests verify all fields across 12 voice samples. |
-| **Voice query returns correct answer < 3 s** | Step 5 — answer card shows `elapsed_ms`. RAG/keyword retrieval method shown. `test_api.py::TestQuery::test_query_response_time` asserts < 3s. |
+| **Voice query returns correct answer < 3 s** | Step 5 — answer card shows `elapsed_ms`. `test_api.py::TestQuery::test_query_response_time` asserts < 3s. |
 | **Work order creation → correct backend record** | After step 1, `GET /work-orders` shows the structured row. `test_api.py::TestWorkOrders::test_work_order_correctly_structured` verifies all fields. |
 | **Offline queue syncs & processes all notes** | Steps 11–13. `test_offline_sync.py` verifies: FIFO order, mixed success/failure, retry, and empty queue. |
 
@@ -204,7 +202,7 @@ Tests cover:
 |---|---|
 | Domain-Aware Voice Capture | Push-to-talk + continuous mode, Cloud STT with vocabulary boost, noise simulation demo |
 | Structured Data Extraction | Gemini + rule-based fallback, 7 fields, confidence scoring, re-prompt on low confidence |
-| Voice Query Answering | RAG (Gemini embeddings) + keyword fallback, spoken answers, < 3s response |
+| Voice Query Answering | Asset-code + fuzzy keyword retrieval, spoken answers, < 3s response |
 | Work Order Integration | Full CRUD by voice, verbal confirmation, multi-technician support |
 | Offline Capability | IndexedDB queue, auto-sync, browser speech fallback, text-confirm fallback |
 | Supervisor Dashboard | Live polling, exception alerts, escalation management, analytics charts, transcript feed |
@@ -223,9 +221,8 @@ VoxField/
 │   ├── db.py                # SQLite connection + schema (incl. escalations)
 │   ├── seed.py              # 40 industrial assets + specs/procedures/history
 │   ├── ai_engine.py         # LLM: Vertex AI → AI Studio → rule-based (w/ confidence)
-│   ├── rag_engine.py        # RAG: Gemini embeddings + cosine similarity search
 │   ├── speech_cloud.py      # Cloud Speech-to-Text + Text-to-Speech
-│   ├── knowledge.py         # Asset retrieval (RAG → fuzzy → keyword)
+│   ├── knowledge.py         # Asset retrieval (code match → fuzzy)
 │   ├── test_extraction.py   # 14 extraction accuracy tests
 │   ├── test_api.py          # 20+ API endpoint tests
 │   ├── test_offline_sync.py # 8 offline sync correctness tests
@@ -252,8 +249,6 @@ VoxField/
 - **Cloud STT/TTS require a billing-enabled GCP project.** Without cloud credentials the
   app uses browser speech only; without any LLM credentials it uses the rule-based
   extractor (English-tuned).
-- **RAG requires a Gemini API key or Vertex AI credentials.** If unavailable, falls back to
-  keyword/fuzzy matching (still functional, just less robust for natural language queries).
 - **SQLite** is ideal for this scale and for demos (zero setup). For a multi-writer cloud
   deployment, swap the DB layer to Postgres — the SQL is standard.
 

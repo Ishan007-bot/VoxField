@@ -187,14 +187,15 @@ def _rule_extract(transcript, vocab):
     if result["severity"] is None and ("leak" in low or "fault" in low or "fail" in low):
         result["severity"] = "medium"
 
-    # action taken — look for common verbs
+    # action taken — start from the EARLIEST action verb mentioned in the text
+    # (not the first one in this list), so "Calibrated ... adjusted ..." captures
+    # the calibration, not the later adjustment.
     action_verbs = ["replaced", "repaired", "cleaned", "tightened", "adjusted",
                     "lubricated", "reset", "topped up", "swapped", "fixed", "calibrated"]
-    for v in action_verbs:
-        if v in low:
-            idx = low.find(v)
-            result["action_taken"] = text[idx:idx + 80].strip().rstrip(".")
-            break
+    positions = [low.find(v) for v in action_verbs if v in low]
+    if positions:
+        idx = min(positions)
+        result["action_taken"] = text[idx:idx + 80].strip().rstrip(".")
 
     # parts required
     pm = re.search(r"(?:need|needs|require[sd]?|order|new)\s+(?:a\s+|an\s+)?([\w\s,]+?)"

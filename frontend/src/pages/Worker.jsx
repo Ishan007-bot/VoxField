@@ -56,7 +56,6 @@ export default function Worker() {
   const [toast, setToast] = useState('')
   const [supported] = useState(speechSupported())
   const [aiEngine, setAiEngine] = useState(null)
-  const [ragEnabled, setRagEnabled] = useState(false)
   const [cloudSpeech, setCloudSpeech] = useState(false)
   const [stats, setStats] = useState(null)
   const [feed, setFeed] = useState([])
@@ -111,10 +110,7 @@ export default function Worker() {
   const { online } = useConnectivity(syncQueue)
 
   useEffect(() => {
-    api.aiStatus().then(s => {
-      setAiEngine(s.engine)
-      setRagEnabled(s.rag === true)
-    }).catch(() => setAiEngine('offline'))
+    api.aiStatus().then(s => setAiEngine(s.engine)).catch(() => setAiEngine('offline'))
     cloudSpeechAvailable().then(setCloudSpeech).catch(() => setCloudSpeech(false))
     if ('speechSynthesis' in window) window.speechSynthesis.getVoices()
     refreshHome()
@@ -439,7 +435,7 @@ export default function Worker() {
           <div className="statusbar">
             <span className="pill"><span className={`dot ${online ? 'online' : 'offline'}`} />
               {online ? 'Online' : 'Offline'}</span>
-            {aiEngine && <span className="pill">🧠 {aiEngine}{ragEnabled ? ' + RAG' : ''}</span>}
+            {aiEngine && <span className="pill">🧠 {aiEngine}</span>}
             <span className="pill" title="Speech engine in use">🎙 {useCloud ? 'cloud voice' : 'browser'}</span>
             {pending > 0 && (
               <button className="pill" style={{ borderColor: 'var(--amber)', color: 'var(--amber)', cursor: online ? 'pointer' : 'default' }}

@@ -32,17 +32,25 @@ class QueueItem:
         self.error = None
 
 
+def _ok(resp):
+    """Raise on non-2xx, mirroring the frontend fetch wrapper (api.js throws
+    on HTTP errors). Without this, a 404 would be wrongly treated as success."""
+    if resp.status_code >= 400:
+        raise RuntimeError(f"API {resp.status_code}: {resp.text}")
+    return resp.json()
+
+
 def process_item(item):
     """Mirrors the frontend processItem() logic — calls the real API."""
     p = item.payload
     if item.type == "create_wo":
-        ex = client.post("/extract", json={
+        ex = _ok(client.post("/extract", json={
             "transcript": item.transcript,
             "technician": "Sync-Test",
             "language": p.get("language", "en"),
-        }).json()
+        }))
         f = ex["fields"]
-        return client.post("/work-orders", json={
+        return _ok(client.post("/work-orders", json={
             "asset_code": f.get("asset_code"),
             "inspection_result": f.get("inspection_result"),
             "fault_code": f.get("fault_code"),
@@ -52,17 +60,17 @@ def process_item(item):
             "parts_required": f.get("parts_required"),
             "raw_transcript": item.transcript,
             "technician": "Sync-Test",
-        }).json()
+        }))
 
     if item.type == "query":
-        return client.post("/query", json={
+        return _ok(client.post("/query", json={
             "question": p["question"],
             "technician": "Sync-Test",
             "language": p.get("language", "en"),
-        }).json()
+        }))
 
     if item.type == "close_wo":
-        return client.post(f"/work-orders/{p['id']}/close").json()
+        return _ok(client.post(f"/work-orders/{p['id']}/close"))
 
     raise ValueError(f"Unknown type: {item.type}")
 
