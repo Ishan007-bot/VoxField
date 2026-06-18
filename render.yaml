@@ -11,6 +11,10 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
+      # Pin Python 3.12 — 3.14 (Render's current default) has no prebuilt wheels
+      # for rapidfuzz/numpy etc., forcing slow source builds that fail.
+      - key: PYTHON_VERSION
+        value: "3.12.10"
       - key: USE_VERTEX
         value: "true"
       - key: USE_CLOUD_SPEECH
