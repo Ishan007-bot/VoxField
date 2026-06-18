@@ -85,18 +85,22 @@ def llm_backend():
 
 # Fail fast when the LLM is throttled/unreachable so we fall back to rule-based
 # quickly instead of the SDK's long retry storm.
-def _generate(prompt):
+def _generate(prompt, json_mode=False):
     backend = _init_llm()
     if backend is None:
         raise RuntimeError("no LLM backend available")
+    # Slightly low temperature for consistent instruction-following, without the
+    # token cap that previously slowed responses down.
+    gen_cfg = {"temperature": 0.2}
     if backend == "studio":
         from google.api_core import retry as _retry
         return _model.generate_content(
             prompt,
+            generation_config=gen_cfg,
             request_options={"timeout": 12, "retry": _retry.Retry(deadline=12, maximum=0)},
         )
     # Vertex AI client
-    return _model.generate_content(prompt)
+    return _model.generate_content(prompt, generation_config=gen_cfg)
 
 
 SEVERITY_WORDS = {
@@ -133,16 +137,19 @@ Known equipment codes: {codes}
 Known procedures: {procs}
 Known locations: {locs}
 
+IMPORTANT: The note may be in Hindi or Spanish. Always write the TEXT field values
+(inspection_result, action_taken, parts_required, location) in ENGLISH, translating
+if needed, so the work order is consistent. Only return null if the info is truly absent.
+
 Return ONLY a JSON object with EXACTLY these keys (use null if truly not mentioned):
   "intent": one of "create_wo", "update_wo", "close_wo", "query", "escalate", "note"
   "asset_code": the equipment code mentioned, normalised like "PMP-4471", or null
-  "inspection_result": short summary of what was found / the condition observed
+  "inspection_result": short ENGLISH summary of what was found / the condition observed
   "fault_code": any fault/error code or short fault label, or null
-  "location": where the work is, prefer a known location, else what was said
+  "location": where the work is (ENGLISH), prefer a known location, else what was said
   "severity": one of "low", "medium", "high", "critical" based on the note
-  "action_taken": what the technician did, or null if nothing done yet
-  "parts_required": comma-separated parts needed, or null
-  "confidence": a dict with per-field confidence: {{"asset_code": 0.0-1.0, "severity": 0.0-1.0, ...}} for all fields above
+  "action_taken": what the technician did, in ENGLISH, or null if nothing done yet
+  "parts_required": comma-separated parts needed, in ENGLISH, or null
 
 Voice note: \"\"\"{transcript}\"\"\"
 
@@ -255,13 +262,19 @@ def extract(transcript, vocab):
 # ---------------------------------------------------------------------------
 # QUERY / ANSWERING
 # ---------------------------------------------------------------------------
-def _answer_prompt(question, context_text):
+LANG_NAMES = {"en": "English", "hi": "Hindi (Devanagari script)", "es": "Spanish"}
+
+
+def _answer_prompt(question, context_text, language="en"):
+    lang_name = LANG_NAMES.get((language or "en").split("-")[0], "English")
     return f"""You are VoxField, a voice assistant for industrial field technicians.
 Answer the technician's spoken question using ONLY the equipment data below.
-Reply in the SAME language the question was asked in.
+Answer the SPECIFIC thing asked — if they ask for power rating, give the power value;
+if they ask location, give the location. Do NOT return an unrelated spec.
+You MUST reply ONLY in {lang_name}. Do not use any other language or script.
 Keep it concise and natural for text-to-speech: 1-3 short sentences, no markdown,
-no bullet symbols. If the data does not contain the answer, say you don't have
-that information for this asset.
+no bullet symbols. If the data does not contain the answer, say (in {lang_name}) that
+you don't have that information for this asset.
 
 EQUIPMENT DATA:
 {context_text}
@@ -310,12 +323,12 @@ def _rule_answer(question, context):
             f"{asset['location']}.")
 
 
-def answer(question, context):
+def answer(question, context, language="en"):
     """Answer a domain question from retrieved context.
     Returns (answer_text, engine_name)."""
     if gemini_available() and context is not None:
         try:
-            resp = _generate(_answer_prompt(question, context["text"]))
+            resp = _generate(_answer_prompt(question, context["text"], language))
             text = (resp.text or "").strip()
             if text:
                 return text, "gemini"

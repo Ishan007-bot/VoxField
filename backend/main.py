@@ -478,7 +478,7 @@ def query(body: QueryIn):
     so the frontend can prove the <3s success metric."""
     started = time.perf_counter()
     context = knowledge.retrieve(body.question)
-    answer_text, engine = ai_engine.answer(body.question, context)
+    answer_text, engine = ai_engine.answer(body.question, context, body.language)
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     _log_voice_note(body.question, "query", body.technician)
     return {
