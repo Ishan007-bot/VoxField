@@ -1,10 +1,10 @@
 """Knowledge-base retrieval: given a question, find the most relevant asset(s)
 and pull together specs, history, and procedures as context for the Q&A engine.
 
-Retrieval is intentionally simple and fast (no embeddings server needed):
-  1. Try to spot an explicit asset code in the text (e.g. "PMP-4471").
-  2. Otherwise fuzzy-match asset names / types / locations with rapidfuzz.
-This keeps Q&A well under the 3-second target even on the rule-based path.
+Retrieval strategy (tried in order):
+  1. Explicit asset code in the text (e.g. "PMP-4471").
+  2. Fuzzy-match asset names / types / locations with rapidfuzz.
+This keeps Q&A well under the 3-second target.
 """
 import json
 import re
@@ -111,4 +111,6 @@ def retrieve(question):
     asset = find_asset(question)
     if not asset:
         return None
-    return asset_context(asset)
+    ctx = asset_context(asset)
+    ctx["retrieval_method"] = "keyword"
+    return ctx

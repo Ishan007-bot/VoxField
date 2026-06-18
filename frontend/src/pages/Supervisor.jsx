@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { useTheme } from '../lib/useTheme.js'
 import { RevealCard } from '../components/Reveal.jsx'
+import { WOTimeline, SeverityPie } from '../components/Charts.jsx'
+import { EscalationPanel } from '../components/EscalationBadge.jsx'
 
-const ICONS = { create_wo: '🛠', close_wo: '✅', update_wo: '✏️', query: '❓', note: '🗒' }
-const LABELS = { create_wo: 'Work order', close_wo: 'Closed WO', update_wo: 'Updated WO', query: 'Question', note: 'Note' }
+const ICONS = { create_wo: '🛠', close_wo: '✅', update_wo: '✏️', query: '❓', note: '🗒', escalate: '🚨' }
+const LABELS = { create_wo: 'Work order', close_wo: 'Closed WO', update_wo: 'Updated WO', query: 'Question', note: 'Note', escalate: 'Escalation' }
 
 function timeAgo(iso) {
   try {
@@ -20,7 +22,7 @@ function timeAgo(iso) {
 export default function Supervisor() {
   const [data, setData] = useState(null)
   const [err, setErr] = useState(false)
-  const [filter, setFilter] = useState('all')   // work-order status filter
+  const [filter, setFilter] = useState('all')
   const [live, setLive] = useState(true)
   const { theme, toggle } = useTheme()
   const timer = useRef(null)
@@ -31,9 +33,16 @@ export default function Supervisor() {
 
   useEffect(() => {
     load()
-    if (live) timer.current = setInterval(load, 4000)  // live polling
+    if (live) timer.current = setInterval(load, 4000)
     return () => clearInterval(timer.current)
   }, [live])
+
+  async function handleAcknowledge(escId) {
+    try {
+      await api.acknowledgeEscalation(escId)
+      load() // refresh
+    } catch { /* ignore */ }
+  }
 
   const s = data?.stats
   const orders = (data?.work_orders || []).filter(o => filter === 'all' ? true
@@ -63,17 +72,28 @@ export default function Supervisor() {
 
       {/* Stats */}
       {s && (
-        <div className="stats stagger" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
+        <div className="stats stagger" style={{ gridTemplateColumns: 'repeat(7, 1fr)' }}>
           <div className="card stat reveal"><div className="num">{s.assets}</div><div className="lbl">Assets</div></div>
           <div className="card stat reveal"><div className="num">{s.open_work_orders}</div><div className="lbl">Open</div></div>
           <div className="card stat reveal"><div className="num">{s.closed_work_orders}</div><div className="lbl">Closed</div></div>
           <div className={`card stat reveal ${s.critical_open ? 'alert' : ''}`}><div className="num">{s.critical_open}</div><div className="lbl">Alerts</div></div>
+          <div className={`card stat reveal ${s.escalations_open ? 'alert' : ''}`}><div className="num">{s.escalations_open || 0}</div><div className="lbl">Escalations</div></div>
           <div className="card stat reveal"><div className="num">{s.active_technicians}</div><div className="lbl">Techs</div></div>
           <div className="card stat reveal"><div className="num">{s.voice_notes}</div><div className="lbl">Notes</div></div>
         </div>
       )}
 
-      {/* Exception alerts — most important, surfaced at top */}
+      {/* Escalations — most urgent, top of page */}
+      {data?.escalations?.length > 0 && (
+        <RevealCard className="escalation-panel" style={{
+          borderColor: 'var(--red)',
+          boxShadow: '0 0 24px rgba(255,90,110,0.25)',
+        }}>
+          <EscalationPanel escalations={data.escalations} onAcknowledge={handleAcknowledge} />
+        </RevealCard>
+      )}
+
+      {/* Exception alerts — open high/critical work orders */}
       {data?.alerts?.length > 0 && (
         <RevealCard style={{ borderColor: 'var(--red)', boxShadow: '0 0 24px rgba(255,90,110,0.25)' }}>
           <div className="section-title" style={{ color: 'var(--red)' }}>⚠ EXCEPTION ALERTS — {data.alerts.length}</div>
@@ -88,6 +108,19 @@ export default function Supervisor() {
           ))}
         </RevealCard>
       )}
+
+      {/* Charts row */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}
+        className="dash-grid">
+        <RevealCard>
+          <div className="section-title">📊 Work Orders Timeline</div>
+          <WOTimeline data={data?.timeline || []} />
+        </RevealCard>
+        <RevealCard>
+          <div className="section-title">📈 Severity Distribution</div>
+          <SeverityPie data={data?.severity_chart || []} />
+        </RevealCard>
+      </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14, marginTop: 14 }}
         className="dash-grid">

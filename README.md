@@ -12,12 +12,13 @@ industrial environments where screens and keyboards are unusable.
 
 | Feature | How VoxField delivers it |
 |---|---|
-| **Domain-aware voice capture** | Push-to-talk speech, primed with the asset registry vocabulary — equipment codes (`PMP-4471`), procedure names, locations. **Hybrid:** Google Cloud Speech-to-Text when online (noise-robust, vocabulary-biased), browser Web Speech when offline. English / Hindi / Spanish. |
-| **Structured data extraction** | A voice note becomes a structured work order: *inspection result, fault code, location, severity, action taken, parts required* — via Gemini (Vertex AI). |
-| **Voice query answering** | Ask about specs, maintenance history, or procedures → answered from the knowledge base and **spoken back** in the same language, in well under 3 seconds. |
-| **Work order integration** | Create / update / close work orders by voice, with **spoken confirmation** ("Work order 12 created for PMP-4471") in a natural Cloud TTS voice (browser TTS offline). |
-| **Offline capability** | Voice notes & commands queue locally (IndexedDB) when offline and **auto-sync on reconnect**. Speech automatically falls back to the on-device browser engine. Text-confirm fallback guarantees content. |
-| **Supervisor dashboard** | Live web view: field worker activity, work-order status, voice transcripts, and **exception alerts** for high/critical faults. |
+| **Domain-aware voice capture** | Push-to-talk + **continuous hands-free** speech capture with silence detection. Primed with asset vocabulary (equipment codes, procedures, locations). **Hybrid:** Google Cloud STT when online (noise-robust, vocabulary-biased), browser Web Speech when offline. English / Hindi / Spanish. **Noise simulation** demo to prove accuracy. |
+| **Structured data extraction** | Voice note → structured work order: *inspection result, fault code, location, severity, action taken, parts required* — via Gemini (Vertex AI). **Per-field confidence scoring** with re-prompt on low confidence. |
+| **Voice query answering** | Ask about specs, maintenance history, or procedures → answered from the knowledge base (asset-code + fuzzy retrieval) and **spoken back** in the same language. Response time displayed (well under 3 seconds). |
+| **Work order integration** | Create / update / close work orders by voice, with **spoken confirmation**. Full CRUD with severity tracking. |
+| **Fault escalation** | Say "escalate to supervisor" → auto-creates an escalation alert visible on the supervisor dashboard with real-time status (open → acknowledged → resolved). |
+| **Offline capability** | Voice notes & commands queue locally (IndexedDB) when offline and **auto-sync on reconnect**. Speech falls back to on-device browser engine. Text-confirm fallback guarantees content. |
+| **Supervisor dashboard** | Live web view: field worker activity, work-order status, voice transcripts, **exception alerts**, **escalation panel**, **analytics charts** (WO timeline, severity distribution). |
 
 The knowledge base ships seeded with **40 industrial assets** across 11 types
 (pumps, motors, valves, compressors, generators, HVAC, heat exchangers, tanks,
@@ -31,15 +32,16 @@ pressure vessels, transformers, switchgear) — each with specs, procedures, and
 ┌─────────────────────────┐        REST / JSON        ┌───────────────────────────┐
 │  Frontend (React PWA)    │ ────────────────────────► │  Backend (FastAPI)         │
 │  • Worker voice terminal │                           │  • Work order CRUD         │
-│  • Supervisor dashboard  │ ◄──────────────────────── │  • /extract  /query        │
-│  • Hybrid speech:        │                           │  • /stt  /tts  (cloud)     │
-│    cloud online /        │                           │  • /dashboard  /stats      │
-│    browser offline       │                           │  • AI + speech (below)     │
-│  • IndexedDB offline q    │                          │  • SQLite database         │
+│  • Supervisor dashboard  │ ◄──────────────────────── │  • Escalation management   │
+│  • Hybrid speech:        │                           │  • /extract  /query        │
+│    cloud online /        │                           │  • /stt  /tts  (cloud)     │
+│    browser offline       │                           │  • /dashboard  /stats      │
+│  • Continuous + PTT mode │                           │  • AI + speech             │
+│  • IndexedDB offline q   │                           │  • SQLite database         │
 └─────────────────────────┘                           └───────────────────────────┘
                                                                     │
                                           ┌─────────────────────────┴─────────────────────────┐
-                                          │  Google Cloud (one service-account credential):     │
+                                          │  AI / ML Stack:                                     │
                                           │   • LLM  → Vertex AI (Gemini 2.5 Flash)             │
                                           │   • STT  → Cloud Speech-to-Text   (online only)     │
                                           │   • TTS  → Cloud Text-to-Speech   (online only)     │
@@ -48,20 +50,17 @@ pressure vessels, transformers, switchgear) — each with specs, procedures, and
                                           └─────────────────────────────────────────────────────┘
 ```
 
-- **Frontend:** React + Vite, installable **PWA**. **Hybrid speech** — Google Cloud
-  STT/TTS when online (records mic audio → backend → Cloud Speech), automatically falling
-  back to the browser **Web Speech API** + **SpeechSynthesis** when offline. Industrial-HMI
-  UI with dark + light themes.
-- **Backend:** Python + FastAPI + SQLite. Plain SQL (no ORM) — trivial to read and to
-  migrate to Postgres later if needed.
-- **AI (LLM):** Google **Gemini** for extraction + Q&A, behind a clean interface with a
-  layered fallback chain: **Vertex AI** (service-account, no rate limits) →
-  **AI Studio key** (free tier) → **rule-based** (offline / no credentials). The active
-  backend is reported at `GET /ai-status`.
-- **Speech:** **Google Cloud Speech-to-Text** (vocabulary-biased with the asset codes for
-  accuracy in noise) and **Text-to-Speech** (natural Neural2 voices). Gated by
-  `USE_CLOUD_SPEECH`; status at `GET /speech-status`. The browser engine is the offline
-  fallback, so **offline capability is preserved**.
+### Tech Stack
+
+| Layer | Technology |
+|---|---|
+| **Frontend** | React 18 + Vite PWA, Recharts |
+| **Backend** | Python + FastAPI + SQLite |
+| **LLM** | Google Gemini (Vertex AI / AI Studio) with rule-based fallback |
+| **Retrieval** | Asset-code match + rapidfuzz fuzzy search over the asset registry |
+| **Speech** | Cloud STT/TTS + Web Speech API (hybrid) |
+| **Offline** | IndexedDB + Service Worker (PWA) |
+| **Testing** | pytest (extraction, API, offline sync) |
 
 ---
 
@@ -127,6 +126,18 @@ Open **http://localhost:5173** in Chrome/Edge.
 
 (The dev server proxies `/api/*` to the backend on port 8000 automatically.)
 
+### 3. Run tests
+
+```bash
+cd backend
+pytest test_extraction.py test_api.py test_offline_sync.py -v
+```
+
+Tests cover:
+- **14 extraction accuracy tests** — 12 realistic voice transcripts + confidence + inspection result checks
+- **20+ API endpoint tests** — assets, extraction, queries, work orders, escalations, dashboard
+- **8 offline sync tests** — queue processing, order preservation, failure handling, retry
+
 ---
 
 ## 3-minute demo script
@@ -137,30 +148,39 @@ Open **http://localhost:5173** in Chrome/Edge.
 1. Stay on the **Report** tab, tap the mic, and say:
    > *"Found cooling water pump PMP-4471 in pump house bay two leaking from the seal,
    > severity high, I replaced the mechanical seal, need a new gasket and seal kit."*
-2. The extracted fields appear (equipment, location, severity, action, parts).
+2. The extracted fields appear with **confidence bars** showing per-field accuracy.
    Tap **Create work order** → it speaks *"Work order N created for PMP-4471, severity high."*
 
-**0:45 — Query equipment history (voice answer in <3s)**
-3. Switch to the **Ask** tab, tap the mic, and say:
-   > *"When was the last maintenance on PMP-4471?"*
-4. VoxField speaks the answer aloud and shows the response time (e.g. `12 ms`).
-   (Try the quick-action chips too, e.g. "Specs of PMP-4471".)
+**0:30 — Test in noise (prove domain-aware capture)**
+3. Click **Simulate Noise → Factory Floor** to play background machinery noise.
+4. Speak another report — observe that Cloud STT (vocabulary-biased) still captures the equipment code accurately.
 
-**1:30 — Escalate a fault (critical)**
-5. Back on **Report**, say:
-   > *"Generator GEN-9001 will not start on test, fuel solenoid suspected, severity critical."*
-6. Create the work order. This becomes an **exception alert**.
+**0:45 — Query equipment history (voice answer in <3s)**
+5. Switch to the **Ask** tab, tap the mic, and say:
+   > *"When was the last maintenance on PMP-4471?"*
+6. VoxField speaks the answer aloud and shows the response time (well under 3 seconds).
+
+**1:15 — Escalate a fault**
+7. Back on **Report**, say:
+   > *"Escalate to supervisor, transformer TRF-100 Buchholz relay tripped, too dangerous to proceed."*
+8. The escalation is auto-detected and sent to the supervisor dashboard.
+
+**1:45 — Continuous listening mode**
+9. Toggle from **Push-to-Talk** to **Continuous** mode.
+10. Speak naturally — silence detection auto-segments your speech and processes each segment.
 
 **2:00 — Offline → sync (the resilience story)**
-7. Open DevTools → **Network → Offline**. The status pill flips to **Offline**, and the
-   speech pill switches from **`🎙 cloud voice`** to **`🎙 browser`** automatically.
-8. Record another report (or type one in the offline box). It shows **`⧖ 1 queued`**.
-9. Turn the network back **Online** → the queue **auto-syncs** and announces *"Synced 1 item."*
+11. Open DevTools → **Network → Offline**. The status pill flips to **Offline**, speech switches to browser engine.
+12. Record a report (or type one). It shows **`⧖ 1 queued`**.
+13. Turn the network back **Online** → auto-syncs and announces *"Synced 1 item."*
 
 **2:30 — Supervisor view**
-10. Open **`/supervisor`** in another tab. The LIVE dashboard shows the new work orders,
-    the **CRITICAL** GEN-9001 alert at top, active technicians, and all voice transcripts —
-    refreshing live.
+14. Open **`/supervisor`** — the LIVE dashboard shows:
+    - **Escalation panel** with acknowledge button
+    - **Exception alerts** for critical work orders
+    - **Analytics charts** — WO timeline (bar chart) + severity distribution (pie chart)
+    - **Per-technician activity** with note counts
+    - **Voice transcripts** feed
 
 ---
 
@@ -168,36 +188,55 @@ Open **http://localhost:5173** in Chrome/Edge.
 
 | Metric | How to demo / verify |
 |---|---|
-| Transcription accuracy in a noisy environment | Speak a report with background noise in Chrome. Online uses Cloud STT (vocabulary-biased toward equipment codes for accuracy); the transcript appears and is editable. |
-| Structured extraction maps all required fields | Step 1 above — all six fields populate from one spoken sentence. |
-| Voice query returns correct answer **< 3 s** | Step 3 — the answer card shows the measured `elapsed_ms` (typically single/double-digit ms locally). |
-| Work order creation → correct backend record | After step 1, check `GET /work-orders` or the supervisor dashboard for the structured row. |
-| Offline queue syncs & processes all notes | Steps 7–9 — queued items sync automatically on reconnect; confirmed in the dashboard. |
+| **Transcription accuracy in noisy environment** | Enable noise simulation (Factory/Outdoor/Workshop), speak a report → Cloud STT captures accurately. Per-field confidence bars show extraction quality. Run `pytest test_extraction.py` for 12 transcript accuracy tests. |
+| **Structured extraction maps all required fields** | Step 1 above — all 7 fields populate. Confidence bars show per-field scores. Extraction tests verify all fields across 12 voice samples. |
+| **Voice query returns correct answer < 3 s** | Step 5 — answer card shows `elapsed_ms`. `test_api.py::TestQuery::test_query_response_time` asserts < 3s. |
+| **Work order creation → correct backend record** | After step 1, `GET /work-orders` shows the structured row. `test_api.py::TestWorkOrders::test_work_order_correctly_structured` verifies all fields. |
+| **Offline queue syncs & processes all notes** | Steps 11–13. `test_offline_sync.py` verifies: FIFO order, mixed success/failure, retry, and empty queue. |
+
+---
+
+## Core features mapping
+
+| Assignment Feature | Implementation |
+|---|---|
+| Domain-Aware Voice Capture | Push-to-talk + continuous mode, Cloud STT with vocabulary boost, noise simulation demo |
+| Structured Data Extraction | Gemini + rule-based fallback, 7 fields, confidence scoring, re-prompt on low confidence |
+| Voice Query Answering | Asset-code + fuzzy keyword retrieval, spoken answers, < 3s response |
+| Work Order Integration | Full CRUD by voice, verbal confirmation, multi-technician support |
+| Offline Capability | IndexedDB queue, auto-sync, browser speech fallback, text-confirm fallback |
+| Supervisor Dashboard | Live polling, exception alerts, escalation management, analytics charts, transcript feed |
+| **Bonus: Escalation** | Voice-triggered escalation ("escalate to supervisor"), status tracking |
+| **Bonus: Multi-language** | English, Hindi, Spanish (STT + TTS + extraction) |
+| **Bonus: Multi-technician** | Technician selector, per-technician activity tracking |
 
 ---
 
 ## Project layout
 
 ```
-Voice AI/
+VoxField/
 ├── backend/
-│   ├── main.py            # FastAPI app + all routes (incl. /stt /tts /ai-status)
-│   ├── db.py              # SQLite connection + schema
-│   ├── seed.py            # 40 industrial assets + specs/procedures/history
-│   ├── ai_engine.py       # LLM: Vertex AI → AI Studio → rule-based fallback
-│   ├── speech_cloud.py    # Cloud Speech-to-Text + Text-to-Speech (online)
-│   ├── knowledge.py       # asset retrieval for Q&A
+│   ├── main.py              # FastAPI app + all routes
+│   ├── db.py                # SQLite connection + schema (incl. escalations)
+│   ├── seed.py              # 40 industrial assets + specs/procedures/history
+│   ├── ai_engine.py         # LLM: Vertex AI → AI Studio → rule-based (w/ confidence)
+│   ├── speech_cloud.py      # Cloud Speech-to-Text + Text-to-Speech
+│   ├── knowledge.py         # Asset retrieval (code match → fuzzy)
+│   ├── test_extraction.py   # 14 extraction accuracy tests
+│   ├── test_api.py          # 20+ API endpoint tests
+│   ├── test_offline_sync.py # 8 offline sync correctness tests
 │   ├── requirements.txt
-│   ├── .env.example       # config template (copy to .env)
-│   └── gcp-credentials.json   # your service-account JSON (gitignored — you add this)
+│   └── .env.example
 ├── frontend/
 │   ├── src/
-│   │   ├── pages/        Worker.jsx, Supervisor.jsx
-│   │   ├── lib/          speech (browser + cloud), api, offlineQueue,
-│   │   │                 useConnectivity, useTheme, useReveal
-│   │   ├── components/   Reveal.jsx
-│   │   └── styles.css    industrial-HMI design system (dark + light)
-│   └── vite.config.js    PWA config + dev proxy
+│   │   ├── pages/           Worker.jsx, Supervisor.jsx
+│   │   ├── components/      Reveal, RetroMic, Charts, ConfidenceBar,
+│   │   │                    NoiseDemo, TechnicianSelect, EscalationBadge
+│   │   ├── lib/             speech (browser + cloud + continuous), api,
+│   │   │                    offlineQueue, useConnectivity, useTheme, useReveal
+│   │   └── styles.css       Industrial-HMI design system (dark + light)
+│   └── vite.config.js       PWA config + dev proxy
 └── README.md
 ```
 

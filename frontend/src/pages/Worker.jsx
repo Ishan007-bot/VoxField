@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api.js'
-import { listen, speak, speechSupported, LANGUAGES, unlockAudio,
+import { listen, listenContinuous, speak, speechSupported, LANGUAGES, unlockAudio,
          recordAudio, cloudTranscribe, cloudSpeak, cloudSpeechAvailable } from '../lib/speech.js'
 import { useRevealGroup } from '../lib/useReveal.js'
 import { useTheme } from '../lib/useTheme.js'
@@ -9,8 +9,9 @@ import { useConnectivity } from '../lib/useConnectivity.js'
 import * as queue from '../lib/offlineQueue.js'
 import { RevealCard } from '../components/Reveal.jsx'
 import RetroMic from '../components/RetroMic.jsx'
-
-const TECH = 'R. Mehta' // demo technician identity
+import ConfidenceBar from '../components/ConfidenceBar.jsx'
+import TechnicianSelect from '../components/TechnicianSelect.jsx'
+import NoiseDemo from '../components/NoiseDemo.jsx'
 
 const MODES = [
   { key: 'report', label: '📋 Report' },
@@ -18,8 +19,8 @@ const MODES = [
   { key: 'orders', label: '🛠 Work Orders' },
 ]
 
-const ICONS = { create_wo: '🛠', close_wo: '✅', update_wo: '✏️', query: '❓', note: '🗒' }
-const LABELS = { create_wo: 'Work order', close_wo: 'Closed WO', update_wo: 'Updated WO', query: 'Question', note: 'Note' }
+const ICONS = { create_wo: '🛠', close_wo: '✅', update_wo: '✏️', query: '❓', note: '🗒', escalate: '🚨' }
+const LABELS = { create_wo: 'Work order', close_wo: 'Closed WO', update_wo: 'Updated WO', query: 'Question', note: 'Note', escalate: 'Escalation' }
 
 function timeAgo(iso) {
   try {
@@ -45,8 +46,10 @@ export default function Worker() {
   const [mode, setMode] = useState('report')
   const [lang, setLang] = useState('en-US')
   const [listening, setListening] = useState(false)
+  const [continuous, setContinuous] = useState(false)  // continuous listening mode
   const [transcript, setTranscript] = useState('')
   const [extracted, setExtracted] = useState(null)
+  const [confidence, setConfidence] = useState(null)
   const [answer, setAnswer] = useState(null)
   const [orders, setOrders] = useState([])
   const [busy, setBusy] = useState(false)
@@ -59,7 +62,8 @@ export default function Worker() {
   const [pending, setPending] = useState(0)
   const [failed, setFailed] = useState(0)   // queue items that exhausted auto-retry
   const [syncing, setSyncing] = useState(false)
-  const [textNote, setTextNote] = useState('')   // offline text-confirm fallback
+  const [textNote, setTextNote] = useState('')
+  const [technician, setTechnician] = useState('R. Mehta')
   const stopRef = useRef(null)
   const gridRef = useRevealGroup()
   const { theme, toggle } = useTheme()
@@ -69,25 +73,27 @@ export default function Worker() {
     setFailed(await queue.errorCount())
   }, [])
 
-  // Process one queued item against the backend. Throws on failure (stays queued).
   const processItem = useCallback(async (item) => {
     const p = item.payload
     if (item.type === 'create_wo') {
-      // Re-extract at sync time so Gemini (if available) does the smart parsing.
-      const ex = await api.extract(item.transcript, TECH, p.language)
+      const ex = await api.extract(item.transcript, technician, p.language)
       const f = ex.fields
       return api.createWorkOrder({
         asset_code: f.asset_code, inspection_result: f.inspection_result,
         fault_code: f.fault_code, location: f.location, severity: f.severity,
         action_taken: f.action_taken, parts_required: f.parts_required,
-        raw_transcript: item.transcript, technician: TECH,
+        raw_transcript: item.transcript, technician,
       })
     }
-    if (item.type === 'query') return api.query(p.question, TECH, p.language)
+    if (item.type === 'query') return api.query(p.question, technician, p.language)
     if (item.type === 'update_wo') return api.updateWorkOrder(p.id, p.patch)
     if (item.type === 'close_wo') return api.closeWorkOrder(p.id)
+    if (item.type === 'escalate') return api.createEscalation({
+      asset_code: p.asset_code, reason: p.reason, location: p.location,
+      severity: p.severity || 'critical', technician,
+    })
     throw new Error('Unknown queued action: ' + item.type)
-  }, [])
+  }, [technician])
 
   const syncQueue = useCallback(async () => {
     setSyncing(true)
@@ -123,17 +129,14 @@ export default function Worker() {
     refreshPending()
   }, [refreshPending])
 
-  // Speak: Cloud TTS (natural voice) when online + available, else browser TTS.
   function say(text) {
     if (online && cloudSpeech) {
       cloudSpeak(text, lang, (reason) => {
-        // If Cloud audio couldn't play, surface why instead of silently sounding robotic.
         showToast('Using browser voice (cloud TTS: ' + reason + ')')
       })
     } else speak(text, lang)
   }
 
-  // Whether to use cloud STT/TTS right now.
   const useCloud = online && cloudSpeech
 
   useEffect(() => { if (mode === 'orders') refreshOrders() }, [mode])
@@ -144,7 +147,7 @@ export default function Worker() {
   }
 
   async function deleteNote(id) {
-    setFeed(f => f.filter(n => n.id !== id))   // optimistic
+    setFeed(f => f.filter(n => n.id !== id))
     try { await api.deleteNote(id) } catch { /* ignore */ }
     refreshHome()
   }
@@ -163,18 +166,33 @@ export default function Worker() {
   }
 
   async function toggleListen() {
-    unlockAudio()  // satisfy autoplay policy so Cloud TTS can play later (user gesture)
-    if (listening) { stopRef.current && stopRef.current(); return }
-    setTranscript(''); setExtracted(null); setAnswer(null)
+    unlockAudio()
+    if (listening) { stopRef.current && stopRef.current(); setListening(false); return }
+    setTranscript(''); setExtracted(null); setAnswer(null); setConfidence(null)
     setListening(true)
 
+    // Continuous mode (browser speech only — silence-detected segmentation)
+    if (continuous && !useCloud) {
+      const ctrl = listenContinuous({
+        lang,
+        silenceMs: 2500,
+        onResult: (text) => setTranscript(text),
+        onSegment: (text) => {
+          setListening(false)
+          if (text) handleFinal(text)
+        },
+        onError: (e) => { setListening(false); showToast('Mic error: ' + (e.error || e.message || 'unknown')) },
+      })
+      stopRef.current = ctrl.stop
+      return
+    }
+
     if (useCloud) {
-      // Online: record audio, send to Cloud STT (more accurate, noise-robust).
       const rec = await recordAudio({
         onStop: async (blob) => {
           setListening(false); setBusy(true)
           try {
-            const { transcript: text } = await cloudTranscribe(blob, lang)
+            const { transcript: text, confidence: sttConf } = await cloudTranscribe(blob, lang)
             setTranscript(text)
             if (text) await handleFinal(text)
           } catch (e) {
@@ -187,7 +205,7 @@ export default function Worker() {
       return
     }
 
-    // Offline / no cloud: browser Web Speech API.
+    // Push-to-talk browser mode
     stopRef.current = listen({
       lang,
       continuous: false,
@@ -202,28 +220,31 @@ export default function Worker() {
     return doExtract(text)
   }
 
-  // Quick-action chip: jump to Ask mode and answer a sample question by voice-equivalent.
   function runQuickQuery(q) {
-    unlockAudio()  // user gesture — primes Cloud TTS playback
+    unlockAudio()
     setMode('ask'); setExtracted(null); setTranscript(q); doQuery(q)
   }
 
   async function doExtract(text) {
-    // Offline: queue the raw note now; it will be extracted + filed on reconnect.
     if (!online) {
       await queue.enqueue('create_wo', { language: lang.split('-')[0] }, text)
       await refreshPending()
       const msg = 'Offline — report queued. It will sync when you reconnect.'
       speak(msg, lang); showToast(msg)
-      setTranscript(''); setExtracted(null)
+      setTranscript(''); setExtracted(null); setConfidence(null)
       return
     }
     setBusy(true)
     try {
-      const res = await api.extract(text, TECH, lang.split('-')[0])
+      const res = await api.extract(text, technician, lang.split('-')[0])
       setExtracted(res.fields)
+      setConfidence(res.confidence || null)
+
+      // Auto-escalate if intent is escalate
+      if (res.fields.intent === 'escalate') {
+        await handleEscalation(res.fields, text)
+      }
     } catch (e) {
-      // Network failed mid-request — fall back to queueing.
       await queue.enqueue('create_wo', { language: lang.split('-')[0] }, text)
       await refreshPending()
       showToast('Connection lost — report queued for sync.')
@@ -231,8 +252,30 @@ export default function Worker() {
     } finally { setBusy(false) }
   }
 
+  async function handleEscalation(fields, rawTranscript) {
+    try {
+      const res = await api.createEscalation({
+        asset_code: fields.asset_code,
+        reason: fields.inspection_result || rawTranscript,
+        location: fields.location,
+        severity: fields.severity || 'critical',
+        technician,
+      })
+      const msg = res.confirmation
+      say(msg)
+      showToast(msg)
+      refreshHome()
+    } catch {
+      await queue.enqueue('escalate', {
+        asset_code: fields.asset_code, reason: fields.inspection_result,
+        location: fields.location, severity: fields.severity,
+      }, rawTranscript)
+      await refreshPending()
+      showToast('Offline — escalation queued.')
+    }
+  }
+
   async function doQuery(text) {
-    // Queries need the backend (knowledge base + AI). Offline: queue it.
     if (!online) {
       await queue.enqueue('query', { question: text, language: lang.split('-')[0] }, text)
       await refreshPending()
@@ -242,9 +285,9 @@ export default function Worker() {
     }
     setBusy(true)
     try {
-      const res = await api.query(text, TECH, lang.split('-')[0])
+      const res = await api.query(text, technician, lang.split('-')[0])
       setAnswer(res)
-      say(res.answer) // speak the answer back in the same language (cloud voice if online)
+      say(res.answer)
     } catch (e) {
       await queue.enqueue('query', { question: text, language: lang.split('-')[0] }, text)
       await refreshPending()
@@ -265,17 +308,16 @@ export default function Worker() {
         action_taken: extracted.action_taken,
         parts_required: extracted.parts_required,
         raw_transcript: transcript,
-        technician: TECH,
+        technician,
       })
-      say(res.confirmation)        // verbal confirmation (cloud voice if online)
+      say(res.confirmation)
       showToast(res.confirmation)
-      setExtracted(null); setTranscript(''); refreshHome()
+      setExtracted(null); setTranscript(''); setConfidence(null); refreshHome()
     } catch (e) {
-      // Queue the confirmed fields so nothing is lost if the network drops.
       await queue.enqueue('create_wo', { language: lang.split('-')[0] }, transcript || extracted.inspection_result || '')
       await refreshPending()
       showToast('Connection lost — work order queued for sync.')
-      setExtracted(null); setTranscript('')
+      setExtracted(null); setTranscript(''); setConfidence(null)
     } finally { setBusy(false) }
   }
 
@@ -298,7 +340,6 @@ export default function Worker() {
     }
   }
 
-  // Offline text-confirm fallback: file a typed note when voice/STT isn't available offline.
   async function submitTextNote() {
     const text = textNote.trim()
     if (!text) return
@@ -311,7 +352,14 @@ export default function Worker() {
     showToast(msg); speak(msg, lang)
   }
 
-  const micLabel = listening ? '● Recording — tap to stop'
+  // Re-record handler for low confidence
+  function handleReRecord() {
+    setExtracted(null); setConfidence(null); setTranscript('')
+    showToast('Speak again clearly for better accuracy.')
+  }
+
+  const micLabel = listening
+    ? (continuous ? '● Continuous — tap to stop' : '● Recording — tap to stop')
     : mode === 'ask' ? 'Tap to query equipment'
     : mode === 'report' ? 'Tap to log inspection'
     : 'Tap to record'
@@ -326,7 +374,8 @@ export default function Worker() {
             <div className="tag">Field Voice Terminal</div>
           </div>
         </div>
-        <div className="row" style={{ gap: 10, flexWrap: 'nowrap' }}>
+        <div className="row" style={{ gap: 10, flexWrap: 'nowrap', alignItems: 'center' }}>
+          <TechnicianSelect value={technician} onChange={setTechnician} />
           <select className="lang" value={lang} onChange={e => setLang(e.target.value)} aria-label="Language">
             {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
           </select>
@@ -359,7 +408,7 @@ export default function Worker() {
         {MODES.map(m => (
           <button key={m.key}
             className={`tab ${mode === m.key ? 'active' : ''}`}
-            onClick={() => { setMode(m.key); setExtracted(null); setAnswer(null); setTranscript('') }}>
+            onClick={() => { setMode(m.key); setExtracted(null); setAnswer(null); setTranscript(''); setConfidence(null) }}>
             {m.label}
           </button>
         ))}
@@ -372,12 +421,29 @@ export default function Worker() {
             className={`mic-btn ${listening ? 'listening' : ''}`}
             onClick={toggleListen}
             disabled={!supported || busy}
-            aria-label="Push to talk">
+            aria-label={continuous ? 'Continuous listening' : 'Push to talk'}>
             {listening
               ? <span style={{ fontSize: '2.4rem', lineHeight: 1 }}>⏹</span>
               : <RetroMic size={74} />}
           </button>
           <div className="mic-label">{busy ? 'Processing…' : micLabel}</div>
+
+          {/* Continuous / PTT toggle */}
+          <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: 'center' }}>
+            <button
+              className={`qchip ${!continuous ? 'active-chip' : ''}`}
+              onClick={() => setContinuous(false)}
+              style={!continuous ? { borderColor: 'var(--cyan)', color: 'var(--cyan)' } : {}}>
+              Push-to-Talk
+            </button>
+            <button
+              className={`qchip ${continuous ? 'active-chip' : ''}`}
+              onClick={() => setContinuous(true)}
+              style={continuous ? { borderColor: 'var(--cyan)', color: 'var(--cyan)' } : {}}>
+              Continuous
+            </button>
+          </div>
+
           <div className="statusbar">
             <span className="pill"><span className={`dot ${online ? 'online' : 'offline'}`} />
               {online ? 'Online' : 'Offline'}</span>
@@ -398,7 +464,14 @@ export default function Worker() {
             )}
           </div>
 
-          {/* Quick-action chips — guide the worker / demo voice features */}
+          {/* Noise simulation demo */}
+          {!transcript && !answer && (
+            <div style={{ marginTop: 14, width: '100%', maxWidth: 520 }}>
+              <NoiseDemo />
+            </div>
+          )}
+
+          {/* Quick-action chips */}
           {!transcript && !answer && (
             <div className="qchips" style={{ marginTop: 18 }}>
               <button className="qchip" onClick={() => runQuickQuery('What are the specs of pump PMP-4471?')}>🔧 Specs of PMP-4471</button>
@@ -407,7 +480,7 @@ export default function Worker() {
             </div>
           )}
 
-          {/* Offline text-confirm fallback — guarantees a queued note has content */}
+          {/* Offline text fallback */}
           {!online && (
             <div className="row" style={{ marginTop: 16, width: '100%', maxWidth: 520, justifyContent: 'center' }}>
               <input
@@ -437,7 +510,9 @@ export default function Worker() {
       {/* Extracted fields -> confirm work order (Report mode) */}
       {extracted && mode === 'report' && (
         <RevealCard>
-          <h3 style={{ marginBottom: 8 }}>Work order preview</h3>
+          <h3 style={{ marginBottom: 8 }}>
+            {extracted.intent === 'escalate' ? '🚨 Escalation detected' : 'Work order preview'}
+          </h3>
           {Object.keys(FIELD_LABELS).map(k => (
             <div className="field" key={k}>
               <span className="k">{FIELD_LABELS[k]}</span>
@@ -448,10 +523,22 @@ export default function Worker() {
               </span>
             </div>
           ))}
-          <div className="row" style={{ marginTop: 16 }}>
-            <button className="btn primary" onClick={confirmWorkOrder} disabled={busy}>✓ Create work order</button>
-            <button className="btn" onClick={() => { setExtracted(null); setTranscript('') }}>Discard</button>
-          </div>
+
+          {/* Confidence bars */}
+          <ConfidenceBar confidence={confidence} onReRecord={handleReRecord} />
+
+          {extracted.intent !== 'escalate' && (
+            <div className="row" style={{ marginTop: 16 }}>
+              <button className="btn primary" onClick={confirmWorkOrder} disabled={busy}>✓ Create work order</button>
+              <button className="btn" onClick={() => { setExtracted(null); setTranscript(''); setConfidence(null) }}>Discard</button>
+            </div>
+          )}
+          {extracted.intent === 'escalate' && (
+            <div className="row" style={{ marginTop: 16 }}>
+              <button className="btn primary" onClick={confirmWorkOrder} disabled={busy}>✓ Also create work order</button>
+              <button className="btn" onClick={() => { setExtracted(null); setTranscript(''); setConfidence(null) }}>Done</button>
+            </div>
+          )}
         </RevealCard>
       )}
 
@@ -460,7 +547,10 @@ export default function Worker() {
         <RevealCard>
           <div className="field">
             <span className="k">Answer</span>
-            <span className="pill">⚡ {answer.elapsed_ms} ms</span>
+            <span className="row" style={{ gap: 6 }}>
+              <span className="pill">⚡ {answer.elapsed_ms} ms</span>
+              {answer.retrieval && <span className="pill" title="Knowledge retrieval method">🔍 {answer.retrieval}</span>}
+            </span>
           </div>
           <p className="bignote" style={{ marginTop: 10 }}>{answer.answer}</p>
           <div className="row" style={{ marginTop: 14 }}>
@@ -503,7 +593,7 @@ export default function Worker() {
         </div>
       )}
 
-      {/* Recent activity feed — only on the home (no active transcript/answer) */}
+      {/* Recent activity feed */}
       {mode !== 'orders' && !transcript && !answer && !extracted && feed.length > 0 && (
         <RevealCard style={{ marginTop: 18 }}>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>

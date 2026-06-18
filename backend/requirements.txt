@@ -9,3 +9,6 @@ google-generativeai==0.8.3
 google-cloud-aiplatform==1.157.0
 google-cloud-speech==2.40.0
 google-cloud-texttospeech==2.36.0
+# Testing
+pytest>=7.4.0
+httpx>=0.25.0
