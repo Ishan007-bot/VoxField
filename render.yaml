@@ -19,8 +19,6 @@ services:
         value: us-central1
       - key: VERTEX_MODEL
         value: gemini-2.5-flash
-      - key: DB_PATH
-        value: /var/data/field_assistant.db
       # Set these two in the Render dashboard (mark as secret), do NOT hardcode:
       #   GCP_CREDENTIALS_JSON  = <paste the full service-account JSON>
       #   CORS_ORIGINS          = https://<your-vercel-app>.vercel.app
@@ -28,8 +26,7 @@ services:
         sync: false
       - key: CORS_ORIGINS
         sync: false
-    # Persistent disk so the SQLite DB + created work orders survive restarts.
-    disk:
-      name: voxfield-data
-      mountPath: /var/data
-      sizeGB: 1
+    # NOTE: Render's FREE tier has no persistent disk. The SQLite DB lives on
+    # ephemeral storage and re-seeds 40 assets on each start — so demo-created
+    # work orders reset on restart/redeploy. For persistence, use a paid plan
+    # (add a `disk:` block + set DB_PATH=/var/data/field_assistant.db) or Postgres.
