@@ -49,30 +49,31 @@ export default function Supervisor() {
     : filter === 'open' ? o.status !== 'closed' : o.status === filter)
 
   return (
-    <div className="shell" style={{ maxWidth: 1080 }}>
-      <div className="topbar glass-accent">
+    <div className="page">
+      <header className="page-head">
         <div className="brand">
-          <div className="logo">▣</div>
+          <span className="bar" />
           <div>
             <h1>VOXFIELD · OPS</h1>
             <div className="tag">Supervisor Control Center</div>
           </div>
         </div>
         <div className="row" style={{ gap: 10, flexWrap: 'nowrap', alignItems: 'center' }}>
+          <Link className="pill" to="/" style={{ textDecoration: 'none' }}>← Worker</Link>
           <button className="pill" onClick={() => setLive(l => !l)}
             style={{ borderColor: live ? 'var(--green)' : 'var(--edge)', color: live ? 'var(--green)' : 'var(--ink-soft)' }}>
             <span className={`dot ${live ? 'online' : 'offline'}`} /> {live ? 'LIVE' : 'PAUSED'}
           </button>
           <button className="icon-btn" onClick={toggle} title="Toggle theme">{theme === 'dark' ? '☀️' : '🌙'}</button>
         </div>
-      </div>
+      </header>
 
       {err && <RevealCard className="center"><strong style={{ color: 'var(--red)' }}>Backend unreachable.</strong>
         <p className="muted">Start the API server, then this will reconnect automatically.</p></RevealCard>}
 
       {/* Stats */}
       {s && (
-        <div className="stats stagger" style={{ gridTemplateColumns: 'repeat(7, 1fr)' }}>
+        <div className="stats stagger" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
           <div className="card stat reveal"><div className="num">{s.assets}</div><div className="lbl">Assets</div></div>
           <div className="card stat reveal"><div className="num">{s.open_work_orders}</div><div className="lbl">Open</div></div>
           <div className="card stat reveal"><div className="num">{s.closed_work_orders}</div><div className="lbl">Closed</div></div>
@@ -110,8 +111,7 @@ export default function Supervisor() {
       )}
 
       {/* Charts row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 14 }}
-        className="dash-grid">
+      <div className="dash-grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
         <RevealCard>
           <div className="section-title">📊 Work Orders Timeline</div>
           <WOTimeline data={data?.timeline || []} />
@@ -122,17 +122,15 @@ export default function Supervisor() {
         </RevealCard>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 14, marginTop: 14 }}
-        className="dash-grid">
+      <div className="dash-grid" style={{ gridTemplateColumns: '1.4fr 1fr' }}>
 
         {/* Work orders */}
         <RevealCard>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <div className="section-title">🛠 Work Orders</div>
-            <div className="tabs" style={{ margin: 0 }}>
+            <div className="seg">
               {['all', 'open', 'closed'].map(f => (
-                <button key={f} className={`tab ${filter === f ? 'active' : ''}`}
-                  style={{ padding: '7px 12px', fontSize: '0.72rem' }} onClick={() => setFilter(f)}>{f}</button>
+                <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>
               ))}
             </div>
           </div>

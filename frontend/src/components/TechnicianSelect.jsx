@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 const DEFAULT_TECHNICIANS = [
   'R. Mehta',
@@ -7,58 +7,73 @@ const DEFAULT_TECHNICIANS = [
   'J. Lopez',
 ]
 
-export default function TechnicianSelect({ value, onChange }) {
-  const [adding, setAdding] = useState(false)
-  const [customName, setCustomName] = useState('')
-  // Track any custom names added this session so they stay in the dropdown
-  const [extras, setExtras] = useState([])
+// Custom technician names are persisted so they survive navigation/reloads
+// and stay available in the dropdown after switching away.
+function loadExtras() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('voxfield-technicians') || '[]')
+    return Array.isArray(saved) ? saved : []
+  } catch { return [] }
+}
 
-  const allTechs = [...DEFAULT_TECHNICIANS, ...extras]
+export default function TechnicianSelect({ value, onChange }) {
+  const [editing, setEditing] = useState(false)   // showing the custom-name input?
+  const [customName, setCustomName] = useState('')
+  // Custom names added (persisted so they stay in the dropdown across remounts).
+  const [extras, setExtras] = useState(loadExtras)
+
+  useEffect(() => {
+    localStorage.setItem('voxfield-technicians', JSON.stringify(extras))
+  }, [extras])
+
+  // The dropdown always includes the defaults, any session-added names, AND the
+  // current value (so a persisted/custom name shows as the selected option).
+  const options = Array.from(new Set([
+    ...DEFAULT_TECHNICIANS,
+    ...extras,
+    ...(value ? [value] : []),
+  ]))
 
   function handleSelect(e) {
     const v = e.target.value
     if (v === '__custom__') {
-      setAdding(true)
+      setCustomName('')
+      setEditing(true)
     } else {
-      setAdding(false)
       onChange(v)
     }
   }
 
-  function handleCustomSubmit() {
+  function commitCustom() {
     const name = customName.trim()
-    if (!name) return
-    // Add to extras if not already in the list
-    if (!allTechs.includes(name)) {
-      setExtras(prev => [...prev, name])
-    }
-    onChange(name)
-    setAdding(false)
+    if (!name) { setEditing(false); return }
+    if (!options.includes(name)) setExtras(prev => [...prev, name])
+    onChange(name)        // tell the parent
     setCustomName('')
+    setEditing(false)     // close the input — this is what was failing before
   }
-
-  // Is the current value in our list? If not (e.g. page reload), show it anyway
-  const isKnown = allTechs.includes(value)
 
   return (
     <div className="tech-select">
       <select
         className="lang"
-        value={adding ? '__custom__' : (isKnown ? value : '__custom__')}
+        value={editing ? '__custom__' : value}
         onChange={handleSelect}
         aria-label="Technician"
         style={{ minWidth: 130 }}>
-        {allTechs.map(t => (
-          <option key={t} value={t}>{t}</option>
-        ))}
+        {options.map(t => <option key={t} value={t}>{t}</option>)}
         <option value="__custom__">+ Other…</option>
       </select>
-      {(adding || !isKnown) && (
+
+      {editing && (
         <div className="row" style={{ gap: 6, marginTop: 6 }}>
           <input
-            value={customName || (!isKnown && !adding ? value : '')}
+            value={customName}
             onChange={e => setCustomName(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleCustomSubmit() }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') commitCustom()
+              if (e.key === 'Escape') { setCustomName(''); setEditing(false) }
+            }}
             placeholder="Enter name"
             autoFocus
             style={{
@@ -68,7 +83,7 @@ export default function TechnicianSelect({ value, onChange }) {
               border: '1px solid var(--edge)', flex: 1,
             }}
           />
-          <button className="btn" onClick={handleCustomSubmit}
+          <button className="btn" onClick={commitCustom}
             style={{ padding: '8px 12px', fontSize: '0.78rem' }}>OK</button>
         </div>
       )}
