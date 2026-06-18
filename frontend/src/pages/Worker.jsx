@@ -451,16 +451,22 @@ export default function Worker() {
 
                 {/* Quick-action chips */}
                 {!transcript && !answer && (
-                  <div className="qchips" style={{ marginTop: 14 }}>
-                    <button className="qchip" onClick={() => runQuickQuery('What are the specs of pump PMP-4471?')}>🔧 Specs of PMP-4471</button>
-                    <button className="qchip" onClick={() => runQuickQuery('When was the last maintenance on GEN-9001?')}>🕑 GEN-9001 history</button>
-                    <button className="qchip" onClick={() => runQuickQuery('How do I clean the condenser tubes on the chiller?')}>📋 Chiller procedure</button>
+                  <div style={{ marginTop: 18, width: '100%', maxWidth: 560 }}>
+                    <div className="try-label">Try asking — tap an example</div>
+                    <div className="qchips" style={{ marginTop: 8 }}>
+                      <button className="qchip" onClick={() => runQuickQuery('What are the specs of pump PMP-4471?')}>🔧 Specs of PMP-4471</button>
+                      <button className="qchip" onClick={() => runQuickQuery('When was the last maintenance on GEN-9001?')}>🕑 GEN-9001 history</button>
+                      <button className="qchip" onClick={() => runQuickQuery('How do I clean the condenser tubes on the chiller?')}>📋 Chiller procedure</button>
+                    </div>
                   </div>
                 )}
 
                 {/* Noise simulation demo */}
                 {!transcript && !answer && (
-                  <div style={{ marginTop: 16, width: '100%', maxWidth: 520 }}><NoiseDemo /></div>
+                  <div style={{ marginTop: 18, width: '100%', maxWidth: 520 }}>
+                    <div className="try-label">Test in noise — simulate a worksite</div>
+                    <div style={{ marginTop: 8 }}><NoiseDemo /></div>
+                  </div>
                 )}
 
                 {/* Offline text fallback */}

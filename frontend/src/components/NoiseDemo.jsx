@@ -9,27 +9,38 @@ const NOISE_TYPES = [
 ]
 
 function createNoise(ctx, type) {
-  const bufferSize = ctx.sampleRate * 2 // 2 seconds of noise
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate)
+  const sr = ctx.sampleRate
+  const bufferSize = sr * 3 // 3 seconds, looped
+  const buffer = ctx.createBuffer(1, bufferSize, sr)
   const data = buffer.getChannelData(0)
 
   for (let i = 0; i < bufferSize; i++) {
-    let sample = (Math.random() * 2 - 1) // white noise base
+    const t = i / sr
+    const white = Math.random() * 2 - 1
+    let sample = 0
 
     if (type === 'factory') {
-      // Add low-frequency rumble
-      sample = sample * 0.3 + Math.sin(i / ctx.sampleRate * 2 * Math.PI * 60) * 0.15
-      // Add periodic impact
-      if (i % Math.floor(ctx.sampleRate * 0.8) < 200) sample += 0.4
+      // Heavy low rumble (40 Hz) dominates; quiet hiss; regular metallic CLANG every ~1.2s.
+      sample = Math.sin(t * 2 * Math.PI * 40) * 0.35       // deep rumble
+             + Math.sin(t * 2 * Math.PI * 120) * 0.12      // motor harmonic
+             + white * 0.08                                 // faint hiss
+      const clangPhase = i % Math.floor(sr * 1.2)
+      if (clangPhase < sr * 0.05) {                         // sharp metallic hit, decaying
+        const env = 1 - clangPhase / (sr * 0.05)
+        sample += Math.sin(t * 2 * Math.PI * 900) * 0.5 * env
+      }
     } else if (type === 'outdoor') {
-      // Slower modulation for wind
-      sample = sample * 0.2 * (0.5 + 0.5 * Math.sin(i / ctx.sampleRate * 2 * Math.PI * 0.3))
+      // Wind: slow swelling broadband whoosh, no tonal/rhythmic content.
+      const gust = 0.4 + 0.6 * Math.abs(Math.sin(t * 2 * Math.PI * 0.25))
+      sample = white * 0.45 * gust
     } else {
-      // Workshop: intermittent bursts
-      sample = sample * 0.25
-      if (Math.random() < 0.005) sample += (Math.random() - 0.5) * 0.6
+      // Workshop: busy mid-frequency tool WHINE + frequent erratic bursts (drill/grinder).
+      sample = Math.sin(t * 2 * Math.PI * 520) * 0.18      // power-tool whine
+             + Math.sin(t * 2 * Math.PI * 780) * 0.10      // overtone
+             + white * 0.15
+      if (Math.random() < 0.03) sample += (Math.random() - 0.5) * 0.7  // frequent sharp bursts
     }
-    data[i] = sample
+    data[i] = Math.max(-1, Math.min(1, sample))
   }
 
   const source = ctx.createBufferSource()
@@ -37,12 +48,13 @@ function createNoise(ctx, type) {
   source.loop = true
 
   const gain = ctx.createGain()
-  gain.gain.value = 0.35 // moderate volume
+  gain.gain.value = 0.35
 
-  // Low-pass filter to make it sound more realistic
+  // Per-type tone shaping so each preset is clearly distinguishable.
   const filter = ctx.createBiquadFilter()
-  filter.type = 'lowpass'
-  filter.frequency.value = type === 'outdoor' ? 800 : 2000
+  if (type === 'factory') { filter.type = 'lowpass'; filter.frequency.value = 700 }   // muffled, bass-heavy
+  else if (type === 'outdoor') { filter.type = 'lowpass'; filter.frequency.value = 1200 } // airy whoosh
+  else { filter.type = 'bandpass'; filter.frequency.value = 1500; filter.Q.value = 0.7 } // bright, mid-forward
 
   source.connect(filter)
   filter.connect(gain)

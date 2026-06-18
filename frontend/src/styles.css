@@ -201,6 +201,9 @@ h1, h2, h3, .display { font-family: var(--display); letter-spacing: -0.015em; fo
 .chip.in_progress { color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
 .chip.closed { color: var(--ink-dim); background: color-mix(in srgb, var(--ink-dim) 12%, transparent); }
 
+/* small caption above example/demo controls */
+.try-label { text-align: center; font-family: var(--body); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim); }
+
 /* quick-action / toggle chips */
 .qchips { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 .qchip {
