@@ -4,6 +4,7 @@ Phase 1: app setup, DB init + seed on startup, and asset/knowledge read endpoint
 Phase 2 will add: work order CRUD, voice extraction, and Q&A endpoints.
 """
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -50,10 +51,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="VoxField API", version="0.1.0", lifespan=lifespan)
 
 # Allow the React dev server (and a deployed frontend) to call the API.
+# Set CORS_ORIGINS in production to your frontend URL(s), comma-separated.
+# Defaults to "*" for easy local dev / demos.
+_origins_env = os.getenv("CORS_ORIGINS", "*").strip()
+_allow_origins = ["*"] if _origins_env == "*" else [o.strip() for o in _origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to the real frontend origin before production
-    allow_credentials=True,
+    allow_origins=_allow_origins,
+    allow_credentials=False if _allow_origins == ["*"] else True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

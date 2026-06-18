@@ -11,10 +11,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import gcp_creds
+
 USE_CLOUD_SPEECH = os.getenv("USE_CLOUD_SPEECH", "false").strip().lower() == "true"
-_CRED_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-if _CRED_PATH and not os.path.isabs(_CRED_PATH):
-    _CRED_PATH = os.path.join(os.path.dirname(__file__), _CRED_PATH)
+# Credentials resolved from a file (local) or GCP_CREDENTIALS_JSON env var (cloud).
+_CRED_PATH = gcp_creds.credentials_path()
 
 _stt_client = None
 _tts_client = None

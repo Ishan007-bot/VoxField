@@ -23,13 +23,13 @@ load_dotenv()  # read backend/.env
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
+import gcp_creds
+
 USE_VERTEX = os.getenv("USE_VERTEX", "false").strip().lower() == "true"
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "us-central1").strip()
 VERTEX_MODEL = os.getenv("VERTEX_MODEL", "gemini-2.5-flash").strip()
-_CRED_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-# Resolve a relative credentials path against the backend dir for convenience.
-if _CRED_PATH and not os.path.isabs(_CRED_PATH):
-    _CRED_PATH = os.path.join(os.path.dirname(__file__), _CRED_PATH)
+# Credentials resolved from a file (local) or GCP_CREDENTIALS_JSON env var (cloud).
+_CRED_PATH = gcp_creds.credentials_path()
 
 _backend = None        # "vertex" | "studio" | None — which LLM is live
 _model = None          # the model client object
@@ -37,11 +37,7 @@ _init_error = None
 
 
 def _project_id_from_creds():
-    try:
-        with open(_CRED_PATH, "r", encoding="utf-8") as f:
-            return json.load(f).get("project_id")
-    except Exception:
-        return None
+    return gcp_creds.project_id()
 
 
 def _init_llm():

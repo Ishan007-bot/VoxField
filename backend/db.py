@@ -3,7 +3,10 @@ import sqlite3
 import os
 from contextlib import contextmanager
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "field_assistant.db")
+# DB location: defaults to the backend folder (local dev). In production, set
+# DB_PATH to a persistent disk path (e.g. /var/data/field_assistant.db on Render)
+# so created work orders survive restarts.
+DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "field_assistant.db"))
 
 
 def get_conn():

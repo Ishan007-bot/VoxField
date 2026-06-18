@@ -1,0 +1,35 @@
+# Render blueprint for the VoxField backend (FastAPI).
+# Deploy: push to GitHub, then in Render → "New +" → "Blueprint" → pick this repo.
+# Secrets (GCP_CREDENTIALS_JSON, etc.) are set in the Render dashboard, NOT here.
+services:
+  - type: web
+    name: voxfield-api
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: USE_VERTEX
+        value: "true"
+      - key: USE_CLOUD_SPEECH
+        value: "true"
+      - key: VERTEX_LOCATION
+        value: us-central1
+      - key: VERTEX_MODEL
+        value: gemini-2.5-flash
+      - key: DB_PATH
+        value: /var/data/field_assistant.db
+      # Set these two in the Render dashboard (mark as secret), do NOT hardcode:
+      #   GCP_CREDENTIALS_JSON  = <paste the full service-account JSON>
+      #   CORS_ORIGINS          = https://<your-vercel-app>.vercel.app
+      - key: GCP_CREDENTIALS_JSON
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+    # Persistent disk so the SQLite DB + created work orders survive restarts.
+    disk:
+      name: voxfield-data
+      mountPath: /var/data
+      sizeGB: 1
