@@ -14,9 +14,9 @@ import TechnicianSelect from '../components/TechnicianSelect.jsx'
 import NoiseDemo from '../components/NoiseDemo.jsx'
 
 const MODES = [
-  { key: 'report', label: '📋 Report' },
-  { key: 'ask', label: '❓ Ask' },
-  { key: 'orders', label: '🛠 Work Orders' },
+  { key: 'report', label: 'Report', ico: '📋' },
+  { key: 'ask', label: 'Ask', ico: '❓' },
+  { key: 'orders', label: 'Work Orders', ico: '🛠' },
 ]
 
 const ICONS = { create_wo: '🛠', close_wo: '✅', update_wo: '✏️', query: '❓', note: '🗒', escalate: '🚨' }
@@ -63,7 +63,8 @@ export default function Worker() {
   const [failed, setFailed] = useState(0)   // queue items that exhausted auto-retry
   const [syncing, setSyncing] = useState(false)
   const [textNote, setTextNote] = useState('')
-  const [technician, setTechnician] = useState('R. Mehta')
+  // Persist the selected technician so it survives navigating away and back.
+  const [technician, setTechnician] = useState(() => localStorage.getItem('voxfield-technician') || 'R. Mehta')
   const stopRef = useRef(null)
   const gridRef = useRevealGroup()
   const { theme, toggle } = useTheme()
@@ -128,6 +129,9 @@ export default function Worker() {
     refreshHome()
     refreshPending()
   }, [refreshPending])
+
+  // Remember the technician across navigation/reloads.
+  useEffect(() => { localStorage.setItem('voxfield-technician', technician) }, [technician])
 
   function say(text) {
     if (online && cloudSpeech) {
@@ -364,263 +368,246 @@ export default function Worker() {
     : mode === 'report' ? 'Tap to log inspection'
     : 'Tap to record'
 
+  const setModeReset = (k) => { setMode(k); setExtracted(null); setAnswer(null); setTranscript(''); setConfidence(null) }
+
   return (
-    <div className="shell">
-      <div className="topbar glass-accent">
-        <div className="brand">
-          <div className="logo">◉</div>
-          <div>
-            <h1>VOXFIELD</h1>
-            <div className="tag">Field Voice Terminal</div>
-          </div>
-        </div>
-        <div className="row" style={{ gap: 10, flexWrap: 'nowrap', alignItems: 'center' }}>
-          <TechnicianSelect value={technician} onChange={setTechnician} />
-          <select className="lang" value={lang} onChange={e => setLang(e.target.value)} aria-label="Language">
-            {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
-          </select>
-          <button className="icon-btn" onClick={toggle} aria-label="Toggle dark mode"
-            title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}>
-            {theme === 'dark' ? '☀️' : '🌙'}
-          </button>
-        </div>
-      </div>
-
-      {!supported && (
-        <RevealCard className="center">
-          <strong style={{ color: 'var(--rose)' }}>Voice not supported in this browser.</strong>
-          <p className="muted">Please open VoxField in <b>Chrome</b> or <b>Edge</b> for speech features.</p>
-        </RevealCard>
-      )}
-
-      {/* Stats strip */}
-      {stats && (
-        <div className="stats stagger">
-          <div className="card stat reveal"><div className="num">{stats.assets}</div><div className="lbl">Assets</div></div>
-          <div className="card stat reveal"><div className="num">{stats.open_work_orders}</div><div className="lbl">Open WOs</div></div>
-          <div className={`card stat reveal ${stats.critical_open ? 'alert' : ''}`}><div className="num">{stats.critical_open}</div><div className="lbl">Critical</div></div>
-          <div className="card stat reveal"><div className="num">{stats.voice_notes}</div><div className="lbl">Voice notes</div></div>
-        </div>
-      )}
-
-      {/* Mode tabs */}
-      <div className="tabs">
-        {MODES.map(m => (
-          <button key={m.key}
-            className={`tab ${mode === m.key ? 'active' : ''}`}
-            onClick={() => { setMode(m.key); setExtracted(null); setAnswer(null); setTranscript(''); setConfidence(null) }}>
-            {m.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Big mic */}
-      {mode !== 'orders' && (
-        <div className="mic-wrap">
-          <button
-            className={`mic-btn ${listening ? 'listening' : ''}`}
-            onClick={toggleListen}
-            disabled={!supported || busy}
-            aria-label={continuous ? 'Continuous listening' : 'Push to talk'}>
-            {listening
-              ? <span style={{ fontSize: '2.4rem', lineHeight: 1 }}>⏹</span>
-              : <RetroMic size={74} />}
-          </button>
-          <div className="mic-label">{busy ? 'Processing…' : micLabel}</div>
-
-          {/* Continuous / PTT toggle */}
-          <div className="row" style={{ marginTop: 10, gap: 8, justifyContent: 'center' }}>
-            <button
-              className={`qchip ${!continuous ? 'active-chip' : ''}`}
-              onClick={() => setContinuous(false)}
-              style={!continuous ? { borderColor: 'var(--cyan)', color: 'var(--cyan)' } : {}}>
-              Push-to-Talk
+    <div className="app">
+      {/* ---------- Sidebar (desktop) ---------- */}
+      <aside className="sidebar">
+        <div className="brand"><span className="bar" /><h1>VOXFIELD</h1></div>
+        <div className="brand-sub">Field Voice Terminal</div>
+        <nav className="nav">
+          {MODES.map(m => (
+            <button key={m.key} className={`nav-item ${mode === m.key ? 'active' : ''}`} onClick={() => setModeReset(m.key)}>
+              <span className="ico">{m.ico}</span>{m.label}
             </button>
-            <button
-              className={`qchip ${continuous ? 'active-chip' : ''}`}
-              onClick={() => setContinuous(true)}
-              style={continuous ? { borderColor: 'var(--cyan)', color: 'var(--cyan)' } : {}}>
-              Continuous
-            </button>
-          </div>
+          ))}
+          <Link className="nav-item" to="/supervisor"><span className="ico">📊</span>Supervisor</Link>
+        </nav>
+        <button className="cta" onClick={() => setModeReset('report')}><span className="ico">＋</span>New Capture</button>
+      </aside>
 
-          <div className="statusbar">
-            <span className="pill"><span className={`dot ${online ? 'online' : 'offline'}`} />
-              {online ? 'Online' : 'Offline'}</span>
+      {/* ---------- Main ---------- */}
+      <div className="main">
+        <header className="appbar">
+          <div className="left">
+            <span className="pill"><span className={`dot ${online ? 'online' : 'offline'}`} />{online ? 'System Online' : 'Offline'}</span>
             {aiEngine && <span className="pill">🧠 {aiEngine}</span>}
             <span className="pill" title="Speech engine in use">🎙 {useCloud ? 'cloud voice' : 'browser'}</span>
             {(pending > 0 || failed > 0) && (
               <button className="pill"
-                style={{ borderColor: failed ? 'var(--red)' : 'var(--amber)',
-                         color: failed ? 'var(--red)' : 'var(--amber)',
-                         cursor: online ? 'pointer' : 'default' }}
+                style={{ borderColor: failed ? 'var(--red)' : 'var(--amber)', color: failed ? 'var(--red)' : 'var(--amber)', cursor: online ? 'pointer' : 'default' }}
                 onClick={() => online && (failed ? retrySync() : syncQueue())}
-                title={online ? (failed ? 'Tap to retry failed items' : 'Tap to sync now')
-                              : 'Will sync when online'}>
-                {syncing ? '⟳ syncing…'
-                  : failed ? `⚠ ${failed} failed — retry`
-                  : `⧖ ${pending} queued`}
+                title={online ? (failed ? 'Tap to retry failed items' : 'Tap to sync now') : 'Will sync when online'}>
+                {syncing ? '⟳ syncing…' : failed ? `⚠ ${failed} failed — retry` : `⧖ ${pending} queued`}
               </button>
             )}
           </div>
-
-          {/* Noise simulation demo */}
-          {!transcript && !answer && (
-            <div style={{ marginTop: 14, width: '100%', maxWidth: 520 }}>
-              <NoiseDemo />
-            </div>
-          )}
-
-          {/* Quick-action chips */}
-          {!transcript && !answer && (
-            <div className="qchips" style={{ marginTop: 18 }}>
-              <button className="qchip" onClick={() => runQuickQuery('What are the specs of pump PMP-4471?')}>🔧 Specs of PMP-4471</button>
-              <button className="qchip" onClick={() => runQuickQuery('When was the last maintenance on GEN-9001?')}>🕑 GEN-9001 history</button>
-              <button className="qchip" onClick={() => runQuickQuery('How do I clean the condenser tubes on the chiller?')}>📋 Chiller procedure</button>
-            </div>
-          )}
-
-          {/* Offline text fallback */}
-          {!online && (
-            <div className="row" style={{ marginTop: 16, width: '100%', maxWidth: 520, justifyContent: 'center' }}>
-              <input
-                value={textNote}
-                onChange={e => setTextNote(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') submitTextNote() }}
-                placeholder={mode === 'ask' ? 'Type a question to queue…' : 'Type a note to queue…'}
-                style={{
-                  flex: 1, minWidth: 200, fontFamily: 'var(--mono)', fontSize: '0.9rem',
-                  padding: '12px 14px', borderRadius: 'var(--radius-sm)', color: 'var(--ink)',
-                  background: 'var(--bg-2)', border: '1px solid var(--edge)'
-                }} />
-              <button className="btn" onClick={submitTextNote}>Queue</button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Live transcript */}
-      {transcript && mode !== 'orders' && (
-        <RevealCard className="bignote">
-          <div className="field"><span className="k">You said</span></div>
-          <p style={{ marginTop: 8 }}>{transcript}</p>
-        </RevealCard>
-      )}
-
-      {/* Extracted fields -> confirm work order (Report mode) */}
-      {extracted && mode === 'report' && (
-        <RevealCard>
-          <h3 style={{ marginBottom: 8 }}>
-            {extracted.intent === 'escalate' ? '🚨 Escalation detected' : 'Work order preview'}
-          </h3>
-          {Object.keys(FIELD_LABELS).map(k => (
-            <div className="field" key={k}>
-              <span className="k">{FIELD_LABELS[k]}</span>
-              <span className="v">
-                {k === 'severity' && extracted[k]
-                  ? <span className={`chip ${extracted[k]}`}>{extracted[k]}</span>
-                  : (extracted[k] || <span className="muted">—</span>)}
-              </span>
-            </div>
-          ))}
-
-          {/* Confidence bars */}
-          <ConfidenceBar confidence={confidence} onReRecord={handleReRecord} />
-
-          {extracted.intent !== 'escalate' && (
-            <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn primary" onClick={confirmWorkOrder} disabled={busy}>✓ Create work order</button>
-              <button className="btn" onClick={() => { setExtracted(null); setTranscript(''); setConfidence(null) }}>Discard</button>
-            </div>
-          )}
-          {extracted.intent === 'escalate' && (
-            <div className="row" style={{ marginTop: 16 }}>
-              <button className="btn primary" onClick={confirmWorkOrder} disabled={busy}>✓ Also create work order</button>
-              <button className="btn" onClick={() => { setExtracted(null); setTranscript(''); setConfidence(null) }}>Done</button>
-            </div>
-          )}
-        </RevealCard>
-      )}
-
-      {/* Spoken answer (Ask mode) */}
-      {answer && mode === 'ask' && (
-        <RevealCard>
-          <div className="field">
-            <span className="k">Answer</span>
-            <span className="row" style={{ gap: 6 }}>
-              <span className="pill">⚡ {answer.elapsed_ms} ms</span>
-              {answer.retrieval && <span className="pill" title="Knowledge retrieval method">🔍 {answer.retrieval}</span>}
-            </span>
+          <div className="right">
+            <TechnicianSelect value={technician} onChange={setTechnician} />
+            <select className="lang" value={lang} onChange={e => setLang(e.target.value)} aria-label="Language">
+              {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+            </select>
+            <button className="icon-btn" onClick={toggle} aria-label="Toggle dark mode"
+              title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}>
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
           </div>
-          <p className="bignote" style={{ marginTop: 10 }}>{answer.answer}</p>
-          <div className="row" style={{ marginTop: 14 }}>
-            <button className="btn teal" onClick={() => say(answer.answer)}>🔊 Repeat</button>
-            {answer.asset_code && <span className="pill" style={{ alignSelf: 'center' }}>📦 {answer.asset_code}</span>}
-          </div>
-        </RevealCard>
-      )}
+        </header>
 
-      {/* Work orders list */}
-      {mode === 'orders' && (
-        <div ref={gridRef}>
-          <RevealCard>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <h3>My work orders</h3>
-              <button className="btn" onClick={refreshOrders}>↻ Refresh</button>
-            </div>
-          </RevealCard>
-          {orders.length === 0 && (
-            <RevealCard className="center muted">No work orders yet. Create one from the Report tab.</RevealCard>
-          )}
-          {orders.map(o => (
-            <RevealCard key={o.id}>
-              <div className="field">
-                <span className="k">WO #{o.id} · {o.asset_code || 'unassigned'}</span>
-                <span>
-                  {o.severity && <span className={`chip ${o.severity}`} style={{ marginRight: 6 }}>{o.severity}</span>}
-                  <span className={`chip ${o.status}`}>{o.status.replace('_', ' ')}</span>
-                </span>
+        <div className="content">
+          {/* ===== Central stage ===== */}
+          <section className="stage">
+            <div className="blob a" /><div className="blob b" />
+
+            {!supported && (
+              <div className="card center" style={{ maxWidth: 460, marginBottom: 20 }}>
+                <strong style={{ color: 'var(--red)' }}>Voice not supported in this browser.</strong>
+                <p className="muted">Please open VoxField in <b>Chrome</b> or <b>Edge</b> for speech features.</p>
               </div>
-              <p style={{ margin: '8px 0' }}>{o.inspection_result || '—'}</p>
-              {o.parts_required && <p className="muted">Parts: {o.parts_required}</p>}
-              {o.status !== 'closed' && (
-                <button className="btn rose" style={{ marginTop: 10 }} onClick={() => closeOrder(o.id)}>
-                  ✓ Close work order
-                </button>
-              )}
-            </RevealCard>
-          ))}
-        </div>
-      )}
+            )}
 
-      {/* Recent activity feed */}
-      {mode !== 'orders' && !transcript && !answer && !extracted && feed.length > 0 && (
-        <RevealCard style={{ marginTop: 18 }}>
-          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-            <div className="section-title">⚡ Recent activity</div>
-            <div className="row" style={{ gap: 8 }}>
-              <button className="btn" style={{ padding: '8px 14px', fontSize: '0.85rem' }} onClick={refreshHome} title="Refresh">↻</button>
-              <button className="btn" style={{ padding: '8px 14px', fontSize: '0.85rem', color: 'var(--red)' }} onClick={clearActivity} title="Clear all activity">Clear</button>
-            </div>
-          </div>
-          <div style={{ marginTop: 6 }}>
-            {feed.map((f) => (
-              <div className="feed-item" key={f.id}>
-                <div className="feed-icon">{ICONS[f.intent] || '🗒'}</div>
-                <div className="feed-text">
-                  <div className="t">{f.transcript}</div>
-                  <div className="m">{LABELS[f.intent] || 'Note'} · {f.technician || 'field'} · {timeAgo(f.created_at)}</div>
+            {/* Voice hearth (Report/Ask modes) */}
+            {mode !== 'orders' && (
+              <div className="mic-wrap">
+                <div className="hearth">
+                  <span className="ring r1" /><span className="ring r2" /><span className="ring r3" />
+                  <button className={`mic-btn ${listening ? 'listening' : ''}`} onClick={toggleListen}
+                    disabled={!supported || busy} aria-label={continuous ? 'Continuous listening' : 'Push to talk'}>
+                    {listening ? <span style={{ fontSize: '2.6rem', lineHeight: 1 }}>⏹</span> : <RetroMic size={72} />}
+                  </button>
                 </div>
-                <button className="feed-del" onClick={() => deleteNote(f.id)} title="Delete" aria-label="Delete note">✕</button>
-              </div>
-            ))}
-          </div>
-        </RevealCard>
-      )}
+                <h2 className="hero">{busy ? 'Processing' : listening ? 'Listening now' : 'Ready to listen'}<span style={{ color: 'var(--primary)', fontWeight: 700 }}>.</span></h2>
+                <div className="hero-sub">{micLabel}</div>
+                <div className="viz"><span/><span/><span/><span/><span/><span/></div>
 
-      <RevealCard className="center" style={{ marginTop: 20 }}>
-        <Link className="navlink" to="/supervisor">Supervisor dashboard →</Link>
-      </RevealCard>
+                {/* Continuous / PTT toggle */}
+                <div className="qchips" style={{ marginTop: 20 }}>
+                  <button className="qchip" onClick={() => setContinuous(false)}
+                    style={!continuous ? { borderColor: 'var(--primary)', color: 'var(--primary)' } : {}}>Push-to-Talk</button>
+                  <button className="qchip" onClick={() => setContinuous(true)}
+                    style={continuous ? { borderColor: 'var(--primary)', color: 'var(--primary)' } : {}}>Continuous</button>
+                </div>
+
+                {/* Quick-action chips */}
+                {!transcript && !answer && (
+                  <div className="qchips" style={{ marginTop: 14 }}>
+                    <button className="qchip" onClick={() => runQuickQuery('What are the specs of pump PMP-4471?')}>🔧 Specs of PMP-4471</button>
+                    <button className="qchip" onClick={() => runQuickQuery('When was the last maintenance on GEN-9001?')}>🕑 GEN-9001 history</button>
+                    <button className="qchip" onClick={() => runQuickQuery('How do I clean the condenser tubes on the chiller?')}>📋 Chiller procedure</button>
+                  </div>
+                )}
+
+                {/* Noise simulation demo */}
+                {!transcript && !answer && (
+                  <div style={{ marginTop: 16, width: '100%', maxWidth: 520 }}><NoiseDemo /></div>
+                )}
+
+                {/* Offline text fallback */}
+                {!online && (
+                  <div className="row" style={{ marginTop: 16, width: '100%', maxWidth: 520, justifyContent: 'center' }}>
+                    <input value={textNote} onChange={e => setTextNote(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') submitTextNote() }}
+                      placeholder={mode === 'ask' ? 'Type a question to queue…' : 'Type a note to queue…'}
+                      style={{ flex: 1, minWidth: 200, fontFamily: 'var(--mono)', fontSize: '0.9rem', padding: '12px 14px',
+                               borderRadius: 'var(--radius-sm)', color: 'var(--ink)', background: 'var(--bg-2)', border: '1px solid var(--edge)' }} />
+                    <button className="btn" onClick={submitTextNote}>Queue</button>
+                  </div>
+                )}
+
+                {/* Live transcript */}
+                {transcript && (
+                  <div className="card reveal visible bignote" style={{ marginTop: 18, width: '100%', maxWidth: 560, textAlign: 'left' }}>
+                    <div className="field"><span className="k">You said</span></div>
+                    <p style={{ marginTop: 8 }}>{transcript}</p>
+                  </div>
+                )}
+
+                {/* Extracted -> confirm (Report) */}
+                {extracted && mode === 'report' && (
+                  <div className="card reveal visible" style={{ marginTop: 16, width: '100%', maxWidth: 560, textAlign: 'left' }}>
+                    <h3 style={{ marginBottom: 8 }}>{extracted.intent === 'escalate' ? '🚨 Escalation detected' : 'Work order preview'}</h3>
+                    {Object.keys(FIELD_LABELS).map(k => (
+                      <div className="field" key={k}>
+                        <span className="k">{FIELD_LABELS[k]}</span>
+                        <span className="v">
+                          {k === 'severity' && extracted[k] ? <span className={`chip ${extracted[k]}`}>{extracted[k]}</span> : (extracted[k] || <span className="muted">—</span>)}
+                        </span>
+                      </div>
+                    ))}
+                    <ConfidenceBar confidence={confidence} onReRecord={handleReRecord} />
+                    <div className="row" style={{ marginTop: 16 }}>
+                      <button className="btn primary" onClick={confirmWorkOrder} disabled={busy}>✓ {extracted.intent === 'escalate' ? 'Also create work order' : 'Create work order'}</button>
+                      <button className="btn" onClick={() => { setExtracted(null); setTranscript(''); setConfidence(null) }}>{extracted.intent === 'escalate' ? 'Done' : 'Discard'}</button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Spoken answer (Ask) */}
+                {answer && mode === 'ask' && (
+                  <div className="card reveal visible" style={{ marginTop: 16, width: '100%', maxWidth: 560, textAlign: 'left' }}>
+                    <div className="field">
+                      <span className="k">Answer</span>
+                      <span className="row" style={{ gap: 6 }}>
+                        <span className="pill">⚡ {answer.elapsed_ms} ms</span>
+                        {answer.retrieval && <span className="pill" title="Knowledge retrieval method">🔍 {answer.retrieval}</span>}
+                      </span>
+                    </div>
+                    <p className="bignote" style={{ marginTop: 10 }}>{answer.answer}</p>
+                    <div className="row" style={{ marginTop: 14 }}>
+                      <button className="btn teal" onClick={() => say(answer.answer)}>🔊 Repeat</button>
+                      {answer.asset_code && <span className="pill" style={{ alignSelf: 'center' }}>📦 {answer.asset_code}</span>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Work orders list (fills the stage in orders mode) */}
+            {mode === 'orders' && (
+              <div ref={gridRef} style={{ width: '100%', maxWidth: 620, alignSelf: 'stretch' }}>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: 14 }}>
+                  <h2 className="hero" style={{ fontSize: '1.6rem' }}>Work Orders</h2>
+                  <button className="btn" onClick={refreshOrders}>↻ Refresh</button>
+                </div>
+                {orders.length === 0 && <div className="card center muted reveal visible">No work orders yet. Create one from Report.</div>}
+                {orders.map(o => (
+                  <div className="card reveal visible" key={o.id} style={{ marginBottom: 12 }}>
+                    <div className="field">
+                      <span className="k">WO #{o.id} · {o.asset_code || 'unassigned'}</span>
+                      <span>
+                        {o.severity && <span className={`chip ${o.severity}`} style={{ marginRight: 6 }}>{o.severity}</span>}
+                        <span className={`chip ${o.status}`}>{o.status.replace('_', ' ')}</span>
+                      </span>
+                    </div>
+                    <p style={{ margin: '8px 0' }}>{o.inspection_result || '—'}</p>
+                    {o.parts_required && <p className="muted">Parts: {o.parts_required}</p>}
+                    {o.status !== 'closed' && (
+                      <button className="btn rose" style={{ marginTop: 10 }} onClick={() => closeOrder(o.id)}>✓ Close work order</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* ===== Right context column ===== */}
+          <aside className="context">
+            {stats && (
+              <div>
+                <div className="section-title">📈 Overview</div>
+                <div className="stats">
+                  <div className="card stat"><div className="num">{stats.assets}</div><div className="lbl">Assets</div></div>
+                  <div className="card stat"><div className="num">{stats.open_work_orders}</div><div className="lbl">Open WOs</div></div>
+                  <div className={`card stat ${stats.critical_open ? 'alert' : ''}`}><div className="num">{stats.critical_open}</div><div className="lbl">Critical</div></div>
+                  <div className="card stat"><div className="num">{stats.voice_notes}</div><div className="lbl">Voice notes</div></div>
+                </div>
+              </div>
+            )}
+
+            {feed.length > 0 && (
+              <div className="card">
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div className="section-title" style={{ marginBottom: 0 }}>⚡ Recent activity</div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <button className="btn" style={{ padding: '7px 12px', fontSize: '0.8rem' }} onClick={refreshHome} title="Refresh">↻</button>
+                    <button className="btn" style={{ padding: '7px 12px', fontSize: '0.8rem', color: 'var(--red)' }} onClick={clearActivity} title="Clear all">Clear</button>
+                  </div>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  {feed.map((f) => (
+                    <div className="feed-item" key={f.id}>
+                      <div className="feed-icon">{ICONS[f.intent] || '🗒'}</div>
+                      <div className="feed-text">
+                        <div className="t">{f.transcript}</div>
+                        <div className="m">{LABELS[f.intent] || 'Note'} · {f.technician || 'field'} · {timeAgo(f.created_at)}</div>
+                      </div>
+                      <button className="feed-del" onClick={() => deleteNote(f.id)} title="Delete" aria-label="Delete note">✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </aside>
+        </div>
+
+        <footer className="statusfoot">
+          <span>{online ? '☁ Cloud Synced' : '⚠ Offline — queue active'}{(pending > 0) ? ` · ${pending} queued` : ''}</span>
+          <span>VOXFIELD · {useCloud ? 'Cloud Speech' : 'Browser Speech'}</span>
+        </footer>
+      </div>
+
+      {/* ---------- Bottom bar (mobile) ---------- */}
+      <nav className="bottombar">
+        {MODES.map(m => (
+          <button key={m.key} className={mode === m.key ? 'active' : ''} onClick={() => setModeReset(m.key)}>
+            <span className="ico">{m.ico}</span>{m.label}
+          </button>
+        ))}
+        <Link to="/supervisor" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3, textDecoration: 'none', color: 'var(--ink-soft)', fontFamily: 'var(--display)', fontSize: '0.66rem', fontWeight: 700 }}>
+          <span className="ico" style={{ fontSize: '1.25rem' }}>📊</span>Super
+        </Link>
+      </nav>
 
       {toast && <div className="toast">{toast}</div>}
     </div>
