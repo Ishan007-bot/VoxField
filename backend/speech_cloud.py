@@ -67,30 +67,37 @@ def transcribe(audio_bytes, language="en", phrases=None):
     from google.cloud import speech
 
     lang = LANG_MAP.get(language, "en-US")
-    # Speech adaptation: bias recognition toward our equipment vocabulary.
-    adaptation = None
-    if phrases:
-        adaptation = speech.SpeechAdaptation(
-            phrase_sets=[speech.PhraseSet(phrases=[
-                speech.PhraseSet.Phrase(value=p, boost=15) for p in phrases[:500]
-            ])]
-        )
-    config = speech.RecognitionConfig(
-        # WEBM_OPUS is what the browser MediaRecorder produces by default.
-        encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
-        language_code=lang,
-        enable_automatic_punctuation=True,
-        model="latest_long",
-        adaptation=adaptation,
-    )
     audio = speech.RecognitionAudio(content=audio_bytes)
-    resp = _stt_client.recognize(config=config, audio=audio)
-    text, conf = "", 0.0
-    for result in resp.results:
-        alt = result.alternatives[0]
-        text += alt.transcript + " "
-        conf = max(conf, alt.confidence or 0.0)
-    return text.strip(), conf
+
+    def _config(with_adaptation):
+        # Domain-vocabulary biasing via SpeechContext (simpler + more robust than
+        # SpeechAdaptation/PhraseSet, which can be rejected by the v1 API).
+        contexts = None
+        if with_adaptation and phrases:
+            contexts = [speech.SpeechContext(phrases=[p for p in phrases[:500]], boost=15.0)]
+        return speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+            language_code=lang,
+            enable_automatic_punctuation=True,
+            model="latest_long",
+            speech_contexts=contexts,
+        )
+
+    def _run(cfg):
+        resp = _stt_client.recognize(config=cfg, audio=audio)
+        text, conf = "", 0.0
+        for result in resp.results:
+            alt = result.alternatives[0]
+            text += alt.transcript + " "
+            conf = max(conf, alt.confidence or 0.0)
+        return text.strip(), conf
+
+    # Try with vocabulary biasing; if that errors (e.g. context rejected), retry
+    # plain so a config quirk never breaks transcription entirely.
+    try:
+        return _run(_config(True))
+    except Exception:
+        return _run(_config(False))
 
 
 def synthesize(text, language="en"):

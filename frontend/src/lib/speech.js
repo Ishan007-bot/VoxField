@@ -210,9 +210,20 @@ export async function cloudTranscribe(blob, lang = 'en-US') {
   const fd = new FormData()
   fd.append('audio', blob, 'note.webm')
   fd.append('language', lang.split('-')[0])
-  const res = await fetch(API_BASE + '/stt', { method: 'POST', body: fd })
-  if (!res.ok) throw new Error('STT ' + res.status)
-  return res.json()  // { transcript, confidence }
+  // Generous timeout: the backend may be cold-starting on a free host, and STT
+  // on a few seconds of audio takes a moment.
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), 30000)
+  try {
+    const res = await fetch(API_BASE + '/stt', { method: 'POST', body: fd, signal: ctrl.signal })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`STT ${res.status} ${detail.slice(0, 120)}`)
+    }
+    return await res.json()  // { transcript, confidence }
+  } finally {
+    clearTimeout(t)
+  }
 }
 
 // One reused <audio> element so playback isn't blocked by autoplay policy
