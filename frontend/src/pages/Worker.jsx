@@ -175,19 +175,20 @@ export default function Worker() {
     setTranscript(''); setExtracted(null); setAnswer(null); setConfidence(null)
     setListening(true)
 
-    // Continuous mode (browser speech only — silence-detected segmentation)
-    if (continuous && !useCloud) {
+    // Continuous mode (browser speech, silence-detected segmentation).
+    // The mic stays ON across segments — each pause auto-files a work order
+    // (or answers a query) and listening continues until the user taps stop.
+    // Continuous always uses the streaming browser engine (Cloud STT here is
+    // record-then-send, which can't stream), so it takes priority over cloud.
+    if (continuous) {
       const ctrl = listenContinuous({
         lang,
         silenceMs: 2500,
         onResult: (text) => setTranscript(text),
-        onSegment: (text) => {
-          setListening(false)
-          if (text) handleFinal(text)
-        },
+        onSegment: (text) => { if (text) handleFinal(text) },  // keep listening
         onError: (e) => { setListening(false); showToast('Mic error: ' + (e.error || e.message || 'unknown')) },
       })
-      stopRef.current = ctrl.stop
+      stopRef.current = () => { ctrl.stop(); setListening(false) }
       return
     }
 
@@ -241,12 +242,23 @@ export default function Worker() {
     setBusy(true)
     try {
       const res = await api.extract(text, technician, lang.split('-')[0])
-      setExtracted(res.fields)
-      setConfidence(res.confidence || null)
 
-      // Auto-escalate if intent is escalate
+      // Escalation always takes priority.
       if (res.fields.intent === 'escalate') {
+        setExtracted(res.fields)
+        setConfidence(res.confidence || null)
         await handleEscalation(res.fields, text)
+        return
+      }
+
+      // CONTINUOUS mode = hands-free: auto-file the work order, no confirm tap.
+      // PUSH-TO-TALK mode = show the preview and wait for the "Create" button.
+      if (continuous) {
+        await createWO(res.fields, text)
+        setTranscript('')   // clear so the next dictated segment starts fresh
+      } else {
+        setExtracted(res.fields)
+        setConfidence(res.confidence || null)
       }
     } catch (e) {
       await queue.enqueue('create_wo', { language: lang.split('-')[0] }, text)
@@ -299,30 +311,39 @@ export default function Worker() {
     } finally { setBusy(false) }
   }
 
-  async function confirmWorkOrder() {
-    if (!extracted) return
-    setBusy(true)
+  // Shared work-order creation. Used by both the "Create" button (push-to-talk)
+  // and the auto-file path (continuous mode). Takes fields + transcript directly
+  // so it doesn't depend on async state updates.
+  async function createWO(fields, rawText) {
     try {
       const res = await api.createWorkOrder({
-        asset_code: extracted.asset_code,
-        inspection_result: extracted.inspection_result,
-        fault_code: extracted.fault_code,
-        location: extracted.location,
-        severity: extracted.severity,
-        action_taken: extracted.action_taken,
-        parts_required: extracted.parts_required,
-        raw_transcript: transcript,
+        asset_code: fields.asset_code,
+        inspection_result: fields.inspection_result,
+        fault_code: fields.fault_code,
+        location: fields.location,
+        severity: fields.severity,
+        action_taken: fields.action_taken,
+        parts_required: fields.parts_required,
+        raw_transcript: rawText,
         technician,
       })
       say(res.confirmation)
       showToast(res.confirmation)
       setExtracted(null); setTranscript(''); setConfidence(null); refreshHome()
     } catch (e) {
-      await queue.enqueue('create_wo', { language: lang.split('-')[0] }, transcript || extracted.inspection_result || '')
+      await queue.enqueue('create_wo', { language: lang.split('-')[0] }, rawText || fields.inspection_result || '')
       await refreshPending()
       showToast('Connection lost — work order queued for sync.')
       setExtracted(null); setTranscript(''); setConfidence(null)
-    } finally { setBusy(false) }
+    }
+  }
+
+  // "Create work order" button (push-to-talk confirm path).
+  async function confirmWorkOrder() {
+    if (!extracted) return
+    setBusy(true)
+    try { await createWO(extracted, transcript) }
+    finally { setBusy(false) }
   }
 
   async function closeOrder(id) {
